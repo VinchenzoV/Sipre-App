@@ -26,14 +26,23 @@ if st.button("Get Signal"):
         df["EMA9"] = calculate_ema(df["Close"], 9)
         df["EMA21"] = calculate_ema(df["Close"], 21)
         df["RSI"] = calculate_rsi(df["Close"])
+        df.dropna(inplace=True)
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
         signal = "Neutral"
-        if prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"] and latest["RSI"] > 30:
+        if (
+            prev["EMA9"] < prev["EMA21"]
+            and latest["EMA9"] > latest["EMA21"]
+            and latest["RSI"] > 30
+        ):
             signal = "Buy ✅"
-        elif prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"] and latest["RSI"] < 70:
+        elif (
+            prev["EMA9"] > prev["EMA21"]
+            and latest["EMA9"] < latest["EMA21"]
+            and latest["RSI"] < 70
+        ):
             signal = "Sell ❌"
 
         st.subheader(f"Signal: {signal}")
