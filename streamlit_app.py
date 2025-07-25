@@ -77,16 +77,14 @@ def analyze_symbol(symbol, period, interval):
     if len(df) < 2:
         return None
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-
     try:
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
         ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
         ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
+        rsi = float(latest["RSI"])
     except:
         return None
-
-    rsi = float(latest["RSI"])
 
     if ema_cross_up and rsi > 30:
         signal = "Buy ✅"
@@ -125,7 +123,7 @@ auto_refresh = st.sidebar.number_input("Auto-refresh (min)", 0, 60, 0)
 export_btn = st.sidebar.button("Export CSV")
 
 # ========== MAIN SCAN ==========
-st.subheader("📡 Live Trading Signals")
+st.subheader("🛁 Live Trading Signals")
 signal_log = []
 errors = []
 now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -152,7 +150,7 @@ else:
 # ========== CSV EXPORT ==========
 if export_btn and not df.empty:
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download CSV", csv, "sipre_signals.csv", "text/csv")
+    st.download_button("📅 Download CSV", csv, "sipre_signals.csv", "text/csv")
 
 # ========== AUTO REFRESH ==========
 if auto_refresh > 0:
@@ -162,7 +160,7 @@ if auto_refresh > 0:
 
 # ========== AI SENTIMENT ==========
 st.markdown("---")
-st.subheader("🗞️ News & AI Sentiment")
+st.subheader("📜 News & AI Sentiment")
 
 for symbol in symbols:
     headlines = get_news_headlines(symbol)
