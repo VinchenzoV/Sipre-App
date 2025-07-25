@@ -3,7 +3,7 @@ import requests
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-API_KEY = "d21r7ihr01qquiqnqu8gd21r7ihr01qquiqnqu90"
+API_KEY = "d21sabpr01qquiqo08dgd21sabpr01qquiqo08e0"
 BASE_URL = "https://finnhub.io/api/v1"
 
 def get_data(symbol):
