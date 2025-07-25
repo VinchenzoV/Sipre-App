@@ -2,20 +2,19 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
-import time
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📊 Sipre — Live Trading Dashboard (Single Symbol)")
 
-# ========== SYMBOL + TIMEFRAME ==========
+# --- Symbol + Timeframe + Interval
 popular_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
 symbol = st.selectbox("Select a symbol:", popular_symbols)
 timeframe = st.selectbox("Timeframe:", ["1d", "5d", "1mo", "3mo", "6mo", "1y"])
 interval = st.selectbox("Interval:", ["15m", "30m", "1h", "1d"])
 
-# ========== FUNCTIONS ==========
+# --- Calculation Functions
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -43,7 +42,7 @@ def get_news_headlines(symbol):
     except:
         return ["No news found"]
 
-# ========== PROCESS & DISPLAY ==========
+# --- Signal + Chart Logic
 if st.button("Analyze"):
     df = yf.download(symbol, period=timeframe, interval=interval)
 
@@ -60,15 +59,15 @@ if st.button("Analyze"):
         prev = df.iloc[-2]
 
         signal = "Neutral"
-        if prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"] and latest["RSI"] > 30:
+        if float(prev["EMA9"]) < float(prev["EMA21"]) and float(latest["EMA9"]) > float(latest["EMA21"]) and float(latest["RSI"]) > 30:
             signal = "Buy ✅"
-        elif prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"] and latest["RSI"] < 70:
+        elif float(prev["EMA9"]) > float(prev["EMA21"]) and float(latest["EMA9"]) < float(latest["EMA21"]) and float(latest["RSI"]) < 70:
             signal = "Sell ❌"
 
         st.subheader(f"Signal: {signal}")
         st.write(f"**Price:** {round(latest['Close'], 2)} | **RSI:** {round(latest['RSI'], 2)} | **MACD:** {round(latest['MACD'], 2)}")
 
-        # Chart
+        # Plot chart
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(df.index, df["Close"], label="Price", color="blue")
         ax.plot(df.index, df["EMA9"], label="EMA9", color="orange")
@@ -78,7 +77,7 @@ if st.button("Analyze"):
         ax.grid(True)
         st.pyplot(fig)
 
-        # News
+        # News headlines
         st.markdown("---")
         st.subheader("📰 Recent News")
         headlines = get_news_headlines(symbol)
