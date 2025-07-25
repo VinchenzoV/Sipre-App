@@ -10,7 +10,7 @@ import openai
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📊 Sipre — Free Live Trading Signal Dashboard")
 
-openai.api_key = "your-openai-api-key"  # Optional: for sentiment
+openai.api_key = "your-openai-api-key"  # Optional: replace if using sentiment
 
 default_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
 
@@ -21,8 +21,8 @@ def calculate_ema(series, span):
 
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
@@ -58,15 +58,14 @@ def safe_yf_download(symbol, period, interval):
     try:
         df = yf.download(symbol, period=period, interval=interval, progress=False)
         if df.empty or len(df) < 30:
-            raise ValueError("Insufficient data")
+            return None
         return df
     except:
         return None
 
 def analyze_symbol(symbol, period, interval):
     df = safe_yf_download(symbol, period, interval)
-
-    if df is None:
+    if df is None or len(df) < 30:
         return None
 
     df["EMA9"] = calculate_ema(df["Close"], 9)
@@ -75,14 +74,18 @@ def analyze_symbol(symbol, period, interval):
     df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
     df.dropna(inplace=True)
 
-    if df.empty:
+    if len(df) < 2:
         return None
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
-    ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
-    ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
+    try:
+        ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
+        ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
+    except:
+        return None
+
     rsi = float(latest["RSI"])
 
     if ema_cross_up and rsi > 30:
