@@ -68,14 +68,18 @@ def send_telegram_alert(message):
 if st.button("Analyze") or auto_refresh:
     df = yf.download(symbol, period=timeframe, interval=interval)
 
-    if df.empty or len(df) < 2:
-        st.warning("⚠️ No data found for this symbol/timeframe. Try a different one.")
+    if df.empty or len(df) < 10:
+        st.warning("⚠️ No data or too little data found. Try a different symbol or timeframe.")
     else:
         df["EMA9"] = calculate_ema(df["Close"], 9)
         df["EMA21"] = calculate_ema(df["Close"], 21)
         df["RSI"] = calculate_rsi(df["Close"])
         df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
         df.dropna(inplace=True)
+
+        if len(df) < 2:
+            st.warning("⚠️ Not enough valid data to analyze. Try a longer timeframe or different symbol.")
+            st.stop()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
