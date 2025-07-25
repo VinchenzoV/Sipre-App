@@ -1,7 +1,6 @@
 streamlit
 yfinance
-matplotlib
 pandas
+matplotlib
 requests
 beautifulsoup4
-openai
