@@ -1,23 +1,21 @@
 import streamlit as st
 import yfinance as yf
-import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 import time
-import datetime
 from bs4 import BeautifulSoup
 import openai
 
-# ====== CONFIG ======
+# ========== SETTINGS ==========
 st.set_page_config(page_title="Sipre", layout="wide")
-st.title("📊 Sipre — AI-Enhanced Live Trading Dashboard")
+st.title("📊 Sipre — Free Live Trading Signal Dashboard")
 
-openai.api_key = "your-openai-api-key"  # Optional: replace if using AI sentiment
+openai.api_key = "your-openai-api-key"  # Optional: for sentiment
 
-# ====== SYMBOLS ======
-symbols = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "BTC-USD", "ETH-USD", "SPY", "QQQ"]
+default_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
 
-# ====== FUNCTIONS ======
+# ========== FUNCTIONS ==========
+
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -43,65 +41,73 @@ def get_news_headlines(symbol):
         headlines = soup.find_all("h3", limit=3)
         return [h.text.strip() for h in headlines if h.text.strip()]
     except:
-        return ["No news available."]
+        return ["No news found"]
 
 def get_sentiment(text):
     try:
-        prompt = f"Summarize the sentiment of this news headline: '{text}'"
+        prompt = f"Summarize the sentiment of this headline: '{text}'"
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}]
         )
         return response['choices'][0]['message']['content']
     except:
-        return "Sentiment unavailable"
+        return "Unavailable"
 
-def analyze_symbol(symbol, timeframe="5d", interval="1h"):
+def safe_yf_download(symbol, period, interval):
     try:
-        df = yf.download(symbol, period=timeframe, interval=interval, progress=False)
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
         if df.empty or len(df) < 30:
-            return None
-
-        df["EMA9"] = calculate_ema(df["Close"], 9)
-        df["EMA21"] = calculate_ema(df["Close"], 21)
-        df["RSI"] = calculate_rsi(df["Close"])
-        df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
-        df.dropna(inplace=True)
-
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
-        ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
-        rsi = float(latest["RSI"])
-
-        if ema_cross_up and rsi > 30:
-            signal = "Buy ✅"
-        elif ema_cross_down and rsi < 70:
-            signal = "Sell ❌"
-        else:
-            signal = "Neutral"
-
-        return {
-            "Symbol": symbol,
-            "Price": round(latest["Close"], 2),
-            "RSI": round(rsi, 2),
-            "MACD": round(latest["MACD"], 2),
-            "Volume": int(latest["Volume"]),
-            "Signal": signal,
-            "News": get_news_headlines(symbol)
-        }
+            raise ValueError("Insufficient data")
+        return df
     except:
         return None
 
-# ====== SIDEBAR ======
-st.sidebar.header("⚙️ Controls")
+def analyze_symbol(symbol, period, interval):
+    df = safe_yf_download(symbol, period, interval)
 
-selected_symbols = st.sidebar.multiselect("Select tickers to monitor:", symbols, default=symbols[:5])
+    if df is None:
+        return None
 
-timeframe = st.sidebar.selectbox("Timeframe", ["1d", "5d", "1mo", "3mo", "6mo"])
+    df["EMA9"] = calculate_ema(df["Close"], 9)
+    df["EMA21"] = calculate_ema(df["Close"], 21)
+    df["RSI"] = calculate_rsi(df["Close"])
+    df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
+    df.dropna(inplace=True)
 
-valid_intervals = {
+    if df.empty:
+        return None
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
+    ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
+    rsi = float(latest["RSI"])
+
+    if ema_cross_up and rsi > 30:
+        signal = "Buy ✅"
+    elif ema_cross_down and rsi < 70:
+        signal = "Sell ❌"
+    else:
+        signal = "Neutral"
+
+    return {
+        "Symbol": symbol,
+        "Price": round(latest["Close"], 2),
+        "RSI": round(rsi, 2),
+        "MACD": round(latest["MACD"], 2),
+        "Volume": int(latest["Volume"]),
+        "Signal": signal,
+        "News": get_news_headlines(symbol)
+    }
+
+# ========== SIDEBAR ==========
+st.sidebar.header("⚙️ Settings")
+
+symbols = st.sidebar.multiselect("Symbols", default_symbols, default=default_symbols[:3])
+
+timeframes = {
     "1d": ["15m", "30m"],
     "5d": ["30m", "1h"],
     "1mo": ["1h", "1d"],
@@ -109,76 +115,57 @@ valid_intervals = {
     "6mo": ["1d"]
 }
 
-default_intervals = {
-    "1d": "15m",
-    "5d": "1h",
-    "1mo": "1h",
-    "3mo": "1d",
-    "6mo": "1d"
-}
+timeframe = st.sidebar.selectbox("Timeframe", list(timeframes.keys()), index=1)
+interval = st.sidebar.selectbox("Interval", timeframes[timeframe])
+filter_signal = st.sidebar.selectbox("Filter", ["All", "Buy ✅", "Sell ❌", "Neutral"])
+auto_refresh = st.sidebar.number_input("Auto-refresh (min)", 0, 60, 0)
+export_btn = st.sidebar.button("Export CSV")
 
-interval = st.sidebar.selectbox(
-    "Interval",
-    valid_intervals[timeframe],
-    index=valid_intervals[timeframe].index(default_intervals[timeframe])
-)
-
-refresh_interval = st.sidebar.number_input("Auto-refresh (minutes)", min_value=0, max_value=60, value=0)
-filter_signal = st.sidebar.selectbox("Filter signals", ["All", "Buy ✅", "Sell ❌", "Neutral"])
-export_btn = st.sidebar.button("📤 Export to CSV")
-
-# ====== ANALYSIS + DASHBOARD ======
-st.subheader("📡 Live Signal Scanner")
-
+# ========== MAIN SCAN ==========
+st.subheader("📡 Live Trading Signals")
 signal_log = []
-last_updated = time.strftime("%Y-%m-%d %H:%M:%S")
+errors = []
+now = time.strftime("%Y-%m-%d %H:%M:%S")
 
-def run_scan():
-    results = []
-    errors = []
-    for symbol in selected_symbols:
-        result = analyze_symbol(symbol, timeframe=timeframe, interval=interval)
-        if result:
-            if filter_signal == "All" or result["Signal"] == filter_signal:
-                results.append(result)
-                signal_log.append({
-                    "Time": last_updated,
-                    **result
-                })
-        else:
-            errors.append(symbol)
+results = []
+for symbol in symbols:
+    res = analyze_symbol(symbol, period=timeframe, interval=interval)
+    if res:
+        if filter_signal == "All" or res["Signal"] == filter_signal:
+            results.append(res)
+            signal_log.append({ "Time": now, **res })
+    else:
+        errors.append(symbol)
 
-    if errors:
-        st.warning(f"⚠️ No data returned for: {', '.join(errors)}")
-    return pd.DataFrame(results)
+if errors:
+    st.warning(f"⚠️ No data for: {', '.join(errors)}")
 
-data = run_scan()
-
-if not data.empty:
-    st.dataframe(data[["Symbol", "Price", "RSI", "MACD", "Volume", "Signal"]].set_index("Symbol"), use_container_width=True)
+df = pd.DataFrame(results)
+if not df.empty:
+    st.dataframe(df[["Symbol", "Price", "RSI", "MACD", "Volume", "Signal"]].set_index("Symbol"), use_container_width=True)
 else:
-    st.warning("⚠️ No data to display. Try changing symbols or interval.")
+    st.error("No signals found. Try different symbols or interval.")
 
-# ====== EXPORT ======
-if export_btn and not data.empty:
-    csv = data.to_csv(index=False).encode('utf-8')
-    st.download_button("Download CSV", csv, "sipre_signals.csv", "text/csv", key='download-csv')
+# ========== CSV EXPORT ==========
+if export_btn and not df.empty:
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download CSV", csv, "sipre_signals.csv", "text/csv")
 
-# ====== AUTO REFRESH ======
-if refresh_interval > 0:
-    st.info(f"⏳ Auto-refresh every {refresh_interval} minutes is enabled.")
-    time.sleep(refresh_interval * 60)
+# ========== AUTO REFRESH ==========
+if auto_refresh > 0:
+    st.info(f"🔄 Refreshing every {auto_refresh} min...")
+    time.sleep(auto_refresh * 60)
     st.rerun()
 
-# ====== NEWS + AI SENTIMENT ======
+# ========== AI SENTIMENT ==========
 st.markdown("---")
 st.subheader("🗞️ News & AI Sentiment")
 
-for symbol in selected_symbols:
-    news = get_news_headlines(symbol)
-    st.markdown(f"**{symbol} Headlines:**")
-    for headline in news:
-        st.markdown(f"- {headline}")
-        sentiment = get_sentiment(headline)
-        st.caption(f"> 💬 *Sentiment:* {sentiment}")
+for symbol in symbols:
+    headlines = get_news_headlines(symbol)
+    st.markdown(f"**{symbol}**")
+    for h in headlines:
+        st.markdown(f"- {h}")
+        sentiment = get_sentiment(h)
+        st.caption(f"> 🧠 *Sentiment:* {sentiment}")
     st.markdown("---")
