@@ -8,15 +8,16 @@ import datetime
 from bs4 import BeautifulSoup
 import openai
 
-# ----- Streamlit Config -----
+# ====== CONFIG ======
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📊 Sipre — AI-Enhanced Live Trading Dashboard")
 
-openai.api_key = "your-openai-api-key"  # Optional: replace with real key if using OpenAI sentiment
+openai.api_key = "your-openai-api-key"  # Optional if using sentiment analysis
 
-# ----- Global Symbol List -----
+# ====== SYMBOLS ======
 symbols = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "BTC-USD", "ETH-USD", "SPY", "QQQ"]
 
+# ====== FUNCTIONS ======
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -40,7 +41,7 @@ def get_news_headlines(symbol):
         page = requests.get(url)
         soup = BeautifulSoup(page.content, "html.parser")
         headlines = soup.find_all("h3", limit=3)
-        return [h.text for h in headlines if h.text.strip()]
+        return [h.text.strip() for h in headlines if h.text.strip()]
     except:
         return ["No news available."]
 
@@ -57,8 +58,8 @@ def get_sentiment(text):
 
 def analyze_symbol(symbol, timeframe="5d", interval="1h"):
     try:
-        df = yf.download(symbol, period=timeframe, interval=interval)
-        if df.empty or len(df) < 26:
+        df = yf.download(symbol, period=timeframe, interval=interval, progress=False)
+        if df.empty or len(df) < 30:
             return None
 
         df["EMA9"] = calculate_ema(df["Close"], 9)
@@ -85,36 +86,33 @@ def analyze_symbol(symbol, timeframe="5d", interval="1h"):
             "Symbol": symbol,
             "Price": round(latest["Close"], 2),
             "RSI": round(rsi, 2),
-            "Signal": signal,
             "MACD": round(latest["MACD"], 2),
             "Volume": int(latest["Volume"]),
+            "Signal": signal,
             "News": get_news_headlines(symbol)
         }
-
-    except Exception as e:
+    except:
         return None
 
-# ----- Sidebar Controls -----
-st.sidebar.header("⚙️ Dashboard Controls")
+# ====== SIDEBAR ======
+st.sidebar.header("⚙️ Controls")
 
 selected_symbols = st.sidebar.multiselect("Select tickers to monitor:", symbols, default=symbols[:5])
 timeframe = st.sidebar.selectbox("Timeframe", ["1d", "5d", "1mo", "3mo", "6mo"])
 interval = st.sidebar.selectbox("Interval", ["15m", "30m", "1h", "1d"])
 refresh_interval = st.sidebar.number_input("Auto-refresh (minutes)", min_value=0, max_value=60, value=0)
 filter_signal = st.sidebar.selectbox("Filter signals", ["All", "Buy ✅", "Sell ❌", "Neutral"])
+export_btn = st.sidebar.button("📤 Export to CSV")
 
-st.sidebar.markdown("---")
-export_btn = st.sidebar.button("📤 Export Data to CSV")
-
+# ====== ANALYSIS + DASHBOARD ======
 st.subheader("📡 Live Signal Scanner")
 
 signal_log = []
-
-placeholder = st.empty()
 last_updated = time.strftime("%Y-%m-%d %H:%M:%S")
 
 def run_scan():
     results = []
+    errors = []
     for symbol in selected_symbols:
         result = analyze_symbol(symbol, timeframe=timeframe, interval=interval)
         if result:
@@ -124,6 +122,11 @@ def run_scan():
                     "Time": last_updated,
                     **result
                 })
+        else:
+            errors.append(symbol)
+
+    if errors:
+        st.warning(f"⚠️ No data returned for: {', '.join(errors)}")
     return pd.DataFrame(results)
 
 data = run_scan()
@@ -131,19 +134,20 @@ data = run_scan()
 if not data.empty:
     st.dataframe(data[["Symbol", "Price", "RSI", "MACD", "Volume", "Signal"]].set_index("Symbol"), use_container_width=True)
 else:
-    st.warning("No data to display.")
+    st.warning("⚠️ No data to display. Try changing symbols or interval.")
 
-# ----- Export -----
+# ====== EXPORT ======
 if export_btn and not data.empty:
     csv = data.to_csv(index=False).encode('utf-8')
     st.download_button("Download CSV", csv, "sipre_signals.csv", "text/csv", key='download-csv')
 
-# ----- Auto-refresh -----
+# ====== AUTO REFRESH ======
 if refresh_interval > 0:
     st.info(f"⏳ Auto-refresh every {refresh_interval} minutes is enabled.")
     time.sleep(refresh_interval * 60)
     st.rerun()
 
+# ====== NEWS + AI SENTIMENT ======
 st.markdown("---")
 st.subheader("🗞️ News & AI Sentiment")
 
