@@ -12,7 +12,7 @@ import openai
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📊 Sipre — AI-Enhanced Live Trading Dashboard")
 
-openai.api_key = "your-openai-api-key"  # Optional if using sentiment analysis
+openai.api_key = "your-openai-api-key"  # Optional: replace if using AI sentiment
 
 # ====== SYMBOLS ======
 symbols = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "BTC-USD", "ETH-USD", "SPY", "QQQ"]
@@ -98,8 +98,31 @@ def analyze_symbol(symbol, timeframe="5d", interval="1h"):
 st.sidebar.header("⚙️ Controls")
 
 selected_symbols = st.sidebar.multiselect("Select tickers to monitor:", symbols, default=symbols[:5])
+
 timeframe = st.sidebar.selectbox("Timeframe", ["1d", "5d", "1mo", "3mo", "6mo"])
-interval = st.sidebar.selectbox("Interval", ["15m", "30m", "1h", "1d"])
+
+valid_intervals = {
+    "1d": ["15m", "30m"],
+    "5d": ["30m", "1h"],
+    "1mo": ["1h", "1d"],
+    "3mo": ["1d"],
+    "6mo": ["1d"]
+}
+
+default_intervals = {
+    "1d": "15m",
+    "5d": "1h",
+    "1mo": "1h",
+    "3mo": "1d",
+    "6mo": "1d"
+}
+
+interval = st.sidebar.selectbox(
+    "Interval",
+    valid_intervals[timeframe],
+    index=valid_intervals[timeframe].index(default_intervals[timeframe])
+)
+
 refresh_interval = st.sidebar.number_input("Auto-refresh (minutes)", min_value=0, max_value=60, value=0)
 filter_signal = st.sidebar.selectbox("Filter signals", ["All", "Buy ✅", "Sell ❌", "Neutral"])
 export_btn = st.sidebar.button("📤 Export to CSV")
