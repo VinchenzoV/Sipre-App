@@ -4,18 +4,18 @@ import pandas as pd
 import requests
 import time
 from bs4 import BeautifulSoup
-import openai
+import matplotlib.pyplot as plt
 
-# ========== SETTINGS ==========
 st.set_page_config(page_title="Sipre", layout="wide")
-st.title("📊 Sipre — Free Live Trading Signal Dashboard")
+st.title("📊 Sipre — Live Trading Dashboard (Single Symbol)")
 
-openai.api_key = "your-openai-api-key"  # Optional: replace if using sentiment
-
-default_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
+# ========== SYMBOL + TIMEFRAME ==========
+popular_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
+symbol = st.selectbox("Select a symbol:", popular_symbols)
+timeframe = st.selectbox("Timeframe:", ["1d", "5d", "1mo", "3mo", "6mo", "1y"])
+interval = st.selectbox("Interval:", ["15m", "30m", "1h", "1d"])
 
 # ========== FUNCTIONS ==========
-
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -43,130 +43,44 @@ def get_news_headlines(symbol):
     except:
         return ["No news found"]
 
-def get_sentiment(text):
-    try:
-        prompt = f"Summarize the sentiment of this headline: '{text}'"
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response['choices'][0]['message']['content']
-    except:
-        return "Unavailable"
+# ========== PROCESS & DISPLAY ==========
+if st.button("Analyze"):
+    df = yf.download(symbol, period=timeframe, interval=interval)
 
-def safe_yf_download(symbol, period, interval):
-    try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if df.empty or len(df) < 30:
-            return None
-        return df
-    except:
-        return None
+    if df.empty or len(df) < 2:
+        st.warning("⚠️ No data available. Try a different symbol, timeframe, or interval.")
+    else:
+        df["EMA9"] = calculate_ema(df["Close"], 9)
+        df["EMA21"] = calculate_ema(df["Close"], 21)
+        df["RSI"] = calculate_rsi(df["Close"])
+        df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
+        df.dropna(inplace=True)
 
-def analyze_symbol(symbol, period, interval):
-    df = safe_yf_download(symbol, period, interval)
-    if df is None or len(df) < 30:
-        return None
-
-    df["EMA9"] = calculate_ema(df["Close"], 9)
-    df["EMA21"] = calculate_ema(df["Close"], 21)
-    df["RSI"] = calculate_rsi(df["Close"])
-    df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
-    df.dropna(inplace=True)
-
-    if len(df) < 2:
-        return None
-
-    try:
         latest = df.iloc[-1]
         prev = df.iloc[-2]
-        ema_cross_up = prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"]
-        ema_cross_down = prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"]
-        rsi = float(latest["RSI"])
-    except:
-        return None
 
-    if ema_cross_up and rsi > 30:
-        signal = "Buy ✅"
-    elif ema_cross_down and rsi < 70:
-        signal = "Sell ❌"
-    else:
         signal = "Neutral"
+        if prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"] and latest["RSI"] > 30:
+            signal = "Buy ✅"
+        elif prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"] and latest["RSI"] < 70:
+            signal = "Sell ❌"
 
-    return {
-        "Symbol": symbol,
-        "Price": round(latest["Close"], 2),
-        "RSI": round(rsi, 2),
-        "MACD": round(latest["MACD"], 2),
-        "Volume": int(latest["Volume"]),
-        "Signal": signal,
-        "News": get_news_headlines(symbol)
-    }
+        st.subheader(f"Signal: {signal}")
+        st.write(f"**Price:** {round(latest['Close'], 2)} | **RSI:** {round(latest['RSI'], 2)} | **MACD:** {round(latest['MACD'], 2)}")
 
-# ========== SIDEBAR ==========
-st.sidebar.header("⚙️ Settings")
+        # Chart
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(df.index, df["Close"], label="Price", color="blue")
+        ax.plot(df.index, df["EMA9"], label="EMA9", color="orange")
+        ax.plot(df.index, df["EMA21"], label="EMA21", color="red")
+        ax.set_title(f"{symbol} — Price + EMA")
+        ax.legend()
+        ax.grid(True)
+        st.pyplot(fig)
 
-symbols = st.sidebar.multiselect("Symbols", default_symbols, default=default_symbols[:3])
-
-timeframes = {
-    "1d": ["15m", "30m"],
-    "5d": ["30m", "1h"],
-    "1mo": ["1h", "1d"],
-    "3mo": ["1d"],
-    "6mo": ["1d"]
-}
-
-timeframe = st.sidebar.selectbox("Timeframe", list(timeframes.keys()), index=1)
-interval = st.sidebar.selectbox("Interval", timeframes[timeframe])
-filter_signal = st.sidebar.selectbox("Filter", ["All", "Buy ✅", "Sell ❌", "Neutral"])
-auto_refresh = st.sidebar.number_input("Auto-refresh (min)", 0, 60, 0)
-export_btn = st.sidebar.button("Export CSV")
-
-# ========== MAIN SCAN ==========
-st.subheader("🛁 Live Trading Signals")
-signal_log = []
-errors = []
-now = time.strftime("%Y-%m-%d %H:%M:%S")
-
-results = []
-for symbol in symbols:
-    res = analyze_symbol(symbol, period=timeframe, interval=interval)
-    if res:
-        if filter_signal == "All" or res["Signal"] == filter_signal:
-            results.append(res)
-            signal_log.append({ "Time": now, **res })
-    else:
-        errors.append(symbol)
-
-if errors:
-    st.warning(f"⚠️ No data for: {', '.join(errors)}")
-
-df = pd.DataFrame(results)
-if not df.empty:
-    st.dataframe(df[["Symbol", "Price", "RSI", "MACD", "Volume", "Signal"]].set_index("Symbol"), use_container_width=True)
-else:
-    st.error("No signals found. Try different symbols or interval.")
-
-# ========== CSV EXPORT ==========
-if export_btn and not df.empty:
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📅 Download CSV", csv, "sipre_signals.csv", "text/csv")
-
-# ========== AUTO REFRESH ==========
-if auto_refresh > 0:
-    st.info(f"🔄 Refreshing every {auto_refresh} min...")
-    time.sleep(auto_refresh * 60)
-    st.rerun()
-
-# ========== AI SENTIMENT ==========
-st.markdown("---")
-st.subheader("📜 News & AI Sentiment")
-
-for symbol in symbols:
-    headlines = get_news_headlines(symbol)
-    st.markdown(f"**{symbol}**")
-    for h in headlines:
-        st.markdown(f"- {h}")
-        sentiment = get_sentiment(h)
-        st.caption(f"> 🧠 *Sentiment:* {sentiment}")
-    st.markdown("---")
+        # News
+        st.markdown("---")
+        st.subheader("📰 Recent News")
+        headlines = get_news_headlines(symbol)
+        for h in headlines:
+            st.markdown(f"- {h}")
