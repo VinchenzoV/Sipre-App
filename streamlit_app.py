@@ -1,183 +1,123 @@
+# sipre_v2_dashboard.py
+
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import numpy as np
+import yfinance as yf
 import matplotlib.pyplot as plt
-import os
-import time
-import requests
 from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
-import numpy as np
-import traceback
 
-st.set_page_config(page_title="Sipre", layout="wide")
-st.title("📈 Sipre — Trading Signal App (Live Yahoo Finance)")
+st.set_page_config(layout="wide")
+st.title("📊 SIPRE v2 - Trading Signal Dashboard")
 
-popular_symbols = ["AAPL", "TSLA", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BTC-USD", "ETH-USD", "SPY"]
-symbol_choice = st.selectbox("Choose a popular symbol:", popular_symbols)
-custom_symbol = st.text_input("Or enter a custom symbol:", value=symbol_choice)
+# --- Sidebar ---
+st.sidebar.header("Configuration")
+tickers_input = st.sidebar.text_input("Enter symbols (comma-separated)", "AAPL, MSFT, NVDA")
+show_macd = st.sidebar.checkbox("Include MACD", True)
+show_volume = st.sidebar.checkbox("Show Volume", True)
+show_forecast = st.sidebar.checkbox("Show Forecast", True)
+forecast_days = st.sidebar.slider("Forecast days ahead", 1, 30, 7)
 
-timeframe = st.selectbox("Select timeframe:", ["1d", "5d", "1mo", "3mo", "6mo", "1y"])
-auto_refresh = st.checkbox("🔄 Auto-refresh every 1 minute")
-
-def calculate_ema(series, span):
-    return series.ewm(span=span, adjust=False).mean()
-
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_macd(df):
-    ema12 = df["Close"].ewm(span=12).mean()
-    ema26 = df["Close"].ewm(span=26).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
-    return macd, signal
-
-def send_discord_alert(message):
-    webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+@st.cache_data(show_spinner=False)
+def load_data(symbol, period="6mo"):
     try:
-        requests.post(webhook_url, json={"content": message})
-    except:
-        st.warning("Failed to send Discord alert.")
+        df = yf.download(symbol, period=period)
+        df.reset_index(inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Error loading {symbol}: {e}")
+        return None
 
-@st.cache_data(ttl=300)
-def get_data(symbol, timeframe, interval):
-    return yf.download(symbol, period=timeframe, interval=interval)
+def calculate_indicators(df):
+    df["EMA9"] = df["Close"].ewm(span=9).mean()
+    df["EMA21"] = df["Close"].ewm(span=21).mean()
+    delta = df["Close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=14).mean()
+    avg_loss = pd.Series(loss).rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    if show_macd:
+        exp12 = df["Close"].ewm(span=12, adjust=False).mean()
+        exp26 = df["Close"].ewm(span=26, adjust=False).mean()
+        df["MACD"] = exp12 - exp26
+        df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    return df
 
-def predict_prices(df, days=5):
-    df = df.reset_index()
-    if 'Date' not in df.columns:
-        if 'index' in df.columns:
-            df.rename(columns={"index": "Date"}, inplace=True)
-        else:
-            df['Date'] = pd.to_datetime(df.index)
+def generate_signal(df):
+    if df.empty or len(df) < 21:
+        return "Hold"
+    latest = df.iloc[-1]
+    previous = df.iloc[-2]
+    if latest["EMA9"] > latest["EMA21"] and previous["EMA9"] <= previous["EMA21"] and latest["RSI"] < 70:
+        return "Buy"
+    elif latest["EMA9"] < latest["EMA21"] and previous["EMA9"] >= previous["EMA21"] and latest["RSI"] > 30:
+        return "Sell"
+    else:
+        return "Hold"
 
-    X = np.array(range(len(df))).reshape(-1, 1)
-    y = df["Close"].values
-    model = LinearRegression().fit(X, y)
-    future_x = np.array(range(len(df), len(df) + days)).reshape(-1, 1)
-    future_dates = [df["Date"].iloc[-1] + timedelta(days=i + 1) for i in range(days)]
-    predictions = model.predict(future_x).flatten()
-    return future_dates, predictions
+def forecast_price(df, days):
+    df = df.copy()
+    df = df.dropna()
+    df["Days"] = (df["Date"] - df["Date"].min()).dt.days
+    model = LinearRegression()
+    model.fit(df[["Days"]], df["Close"])
+    last_day = df["Days"].iloc[-1]
+    future_days = np.array(range(last_day + 1, last_day + days + 1)).reshape(-1, 1)
+    forecasted_prices = model.predict(future_days)
+    future_dates = [df["Date"].max() + timedelta(days=i) for i in range(1, days + 1)]
+    return pd.DataFrame({"Date": future_dates, "Forecast": forecasted_prices})
 
-try:
-    if st.button("Get Signal") or auto_refresh:
-        interval = "1h" if timeframe in ["1d", "5d", "1mo"] else "1d"
-        df = get_data(custom_symbol, timeframe, interval)
+# --- Main View ---
+tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-        st.write(f"Data Columns: {df.columns.tolist()}")
-        st.write(df.head())
+for ticker in tickers:
+    st.subheader(f"📈 {ticker} Analysis")
+    df = load_data(ticker)
+    if df is None or df.empty or "Close" not in df.columns:
+        st.warning(f"No data for {ticker}")
+        continue
 
-        if df.empty:
-            st.warning("⚠️ No data found for this symbol/timeframe. Try a different one.")
-            st.stop()
+    df = calculate_indicators(df)
+    signal = generate_signal(df)
 
-        # Fix for MultiIndex columns
-        if isinstance(df.columns, pd.MultiIndex):
-            if ('Close', '') in df.columns:
-                df.columns = df.columns.droplevel(1)
-            else:
-                df.columns = df.columns.get_level_values(0)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Latest Close", f"${df['Close'].iloc[-1]:.2f}")
+        st.metric("RSI", f"{df['RSI'].iloc[-1]:.2f}")
+        st.metric("Signal", signal)
 
-        if "Close" not in df.columns:
-            st.warning("⚠️ 'Close' price data is not available for this symbol/timeframe.")
-            st.stop()
+    # Plotting
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df["Date"], df["Close"], label="Close", color="black")
+    ax.plot(df["Date"], df["EMA9"], label="EMA9", color="blue", linestyle="--")
+    ax.plot(df["Date"], df["EMA21"], label="EMA21", color="red", linestyle="--")
 
-        df.dropna(subset=["Close"], inplace=True)
+    if show_forecast:
+        forecast_df = forecast_price(df, forecast_days)
+        ax.plot(forecast_df["Date"], forecast_df["Forecast"], label="Forecast", color="green", linestyle=":")
 
-        if len(df) < 2:
-            st.warning("⚠️ Not enough data points after cleaning.")
-            st.stop()
+    ax.set_title(f"{ticker} Price Chart")
+    ax.legend()
+    ax.grid(True)
+    st.pyplot(fig)
 
-        df["EMA9"] = calculate_ema(df["Close"], 9)
-        df["EMA21"] = calculate_ema(df["Close"], 21)
-        df["RSI"] = calculate_rsi(df["Close"])
-        df["MACD"], df["MACD_Signal"] = calculate_macd(df)
-        df.dropna(inplace=True)
-
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        ema9_latest = float(latest["EMA9"])
-        ema21_latest = float(latest["EMA21"])
-        ema9_prev = float(prev["EMA9"])
-        ema21_prev = float(prev["EMA21"])
-        rsi_latest = float(latest["RSI"])
-
-        signal = "Neutral"
-        recommendation = "Hold"
-        explanation = "Market appears balanced without a clear direction."
-
-        if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
-            signal = "Buy ✅"
-            recommendation = "Buy"
-            explanation = "The EMA crossover and RSI suggest bullish momentum."
-        elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
-            signal = "Sell ❌"
-            recommendation = "Sell"
-            explanation = "The EMA crossover and RSI suggest bearish momentum."
-
-        signal_log = {
-            "Symbol": custom_symbol.upper(),
-            "Timeframe": timeframe,
-            "Signal": signal,
-            "RSI": round(rsi_latest, 2),
-            "DateTime": latest.name.strftime("%Y-%m-%d %H:%M")
-        }
-        df_log = pd.DataFrame([signal_log])
-        history_file = "signal_history.csv"
-        df_log.to_csv(history_file, mode="a", header=not os.path.exists(history_file), index=False)
-
-        if signal != "Neutral":
-            send_discord_alert(f"{custom_symbol.upper()} Signal: {signal} | RSI: {rsi_latest:.2f} | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-        st.subheader(f"Signal: {signal}")
-        st.write(f"### Recommendation: **{recommendation}**")
-        st.info(f"📊 Explanation: {explanation}")
-        rsi_color = "green" if rsi_latest < 30 else "red" if rsi_latest > 70 else "white"
-        st.markdown(f"**RSI:** <span style='color:{rsi_color}'>{round(rsi_latest, 2)}</span>", unsafe_allow_html=True)
-
-        df = df.reset_index()
-        if 'Date' not in df.columns:
-            if 'index' in df.columns:
-                df.rename(columns={"index": "Date"}, inplace=True)
-            else:
-                df['Date'] = pd.to_datetime(df.index)
-
-        future_dates, predictions = predict_prices(df, days=5)
-        prediction_df = pd.DataFrame({"Date": future_dates, "Predicted": predictions})
-        chart_df = pd.concat([df[["Date", "Close"]].set_index("Date"), prediction_df.set_index("Date")], axis=1)
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        chart_df["Close"].plot(ax=ax, label="Price", color="blue")
-        chart_df["Predicted"].plot(ax=ax, label="Forecast", color="green", linestyle="dashed")
-        ax.set_title(f"{custom_symbol.upper()} Price + Forecast ({timeframe})")
-        ax.legend()
-        ax.grid(True)
-        st.pyplot(fig)
-
-        df.set_index("Date", inplace=True)
-        fig_macd, ax_macd = plt.subplots(figsize=(10, 3))
-        ax_macd.plot(df.index, df["MACD"], label="MACD", color="purple")
-        ax_macd.plot(df.index, df["MACD_Signal"], label="Signal", color="pink")
-        ax_macd.axhline(0, linestyle='--', color='gray')
-        ax_macd.set_title("MACD")
+    if show_macd:
+        fig_macd, ax_macd = plt.subplots(figsize=(10, 2))
+        ax_macd.plot(df["Date"], df["MACD"], label="MACD", color="purple")
+        ax_macd.plot(df["Date"], df["Signal"], label="Signal", color="orange")
+        ax_macd.set_title("MACD Indicator")
         ax_macd.legend()
-        ax_macd.grid(True)
         st.pyplot(fig_macd)
 
-        if os.path.exists(history_file):
-            with open(history_file, "r") as f:
-                st.download_button("📥 Download Signal History", f.read(), file_name="signals.csv")
+    if show_volume:
+        fig_vol, ax_vol = plt.subplots(figsize=(10, 2))
+        ax_vol.bar(df["Date"], df["Volume"], color="gray")
+        ax_vol.set_title("Volume")
+        st.pyplot(fig_vol)
 
-    if auto_refresh:
-        time.sleep(60)
-        st.experimental_rerun()
+    st.markdown("---")
 
-except Exception as e:
-    st.error(f"Error loading data: {e}")
-    st.text(traceback.format_exc())
+st.info("SIPRE v2: Forecasting + Multi-Symbol RSI/EMA/MACD-based signal system.")
