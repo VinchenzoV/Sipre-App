@@ -69,7 +69,7 @@ def predict_prices(df, days=5):
     model = LinearRegression().fit(X, y)
     future_x = np.array(range(len(df), len(df) + days)).reshape(-1, 1)
     future_dates = [df["Date"].iloc[-1] + timedelta(days=i + 1) for i in range(days)]
-    predictions = model.predict(future_x)
+    predictions = model.predict(future_x).flatten()  # Flatten here!
     return future_dates, predictions
 
 if st.button("Get Signal") or auto_refresh:
