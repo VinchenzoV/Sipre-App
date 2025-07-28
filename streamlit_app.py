@@ -73,14 +73,16 @@ def calculate_adx(df, period=14):
     tr3 = (low - close.shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    atr = tr.rolling(window=period).mean()
+    atr = tr.rolling(window=period, min_periods=period).mean()
 
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+    plus_di = 100 * (plus_dm.rolling(window=period, min_periods=period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(window=period, min_periods=period).mean() / atr)
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.rolling(window=period).mean()
 
+    adx = dx.rolling(window=period, min_periods=period).mean()
+
+    adx = adx.reindex(df.index)
     adx.name = "ADX"
     return adx
 
@@ -99,7 +101,7 @@ def calculate_atr(df, period=14):
     tr2 = (high - close.shift()).abs()
     tr3 = (low - close.shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
+    atr = tr.rolling(window=period, min_periods=period).mean()
     atr.name = "ATR"
     return atr
 
@@ -198,7 +200,7 @@ def main():
     df['OBV'] = calculate_obv(df)
     df['ATR'] = calculate_atr(df)
 
-    # Drop rows with NaN indicators
+    # Drop rows with NaN indicators AFTER assignment
     df.dropna(inplace=True)
 
     # Generate latest signal
