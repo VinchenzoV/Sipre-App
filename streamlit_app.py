@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 import os
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+from fbprophet import Prophet
+import numpy as np
 
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📈 Sipre — Trading Signal App (Live Yahoo Finance)")
@@ -52,6 +54,16 @@ def send_discord_alert(message):
 def get_data(symbol, timeframe, interval):
     return yf.download(symbol, period=timeframe, interval=interval)
 
+# --- Forecasting with Prophet ---
+def forecast_with_prophet(df, periods=5):
+    df = df.reset_index()
+    df_prophet = df[["Date", "Close"]].rename(columns={"Date": "ds", "Close": "y"})
+    model = Prophet(daily_seasonality=True)
+    model.fit(df_prophet)
+    future = model.make_future_dataframe(periods=periods)
+    forecast = model.predict(future)
+    return forecast[["ds", "yhat"]].set_index("ds")
+
 # --- Signal generation and plotting ---
 if st.button("Get Signal") or auto_refresh:
     try:
@@ -76,12 +88,20 @@ if st.button("Get Signal") or auto_refresh:
             ema9_prev = float(prev["EMA9"])
             ema21_prev = float(prev["EMA21"])
             rsi_latest = float(latest["RSI"])
+
+            # --- Generate Signal ---
             signal = "Neutral"
+            recommendation = "Hold"
+            explanation = "Market appears balanced without a clear direction."
 
             if ema9_prev < ema21_prev and ema9_latest > ema21_latest and rsi_latest > 30:
                 signal = "Buy ✅"
+                recommendation = "Buy"
+                explanation = "The EMA crossover and RSI suggest bullish momentum."
             elif ema9_prev > ema21_prev and ema9_latest < ema21_latest and rsi_latest < 70:
                 signal = "Sell ❌"
+                recommendation = "Sell"
+                explanation = "The EMA crossover and RSI suggest bearish momentum."
 
             # --- Log Signal ---
             signal_log = {
@@ -101,14 +121,22 @@ if st.button("Get Signal") or auto_refresh:
 
             # --- Display results ---
             st.subheader(f"Signal: {signal}")
+            st.write(f"### Recommendation: **{recommendation}**")
+            st.info(f"📊 Explanation: {explanation}")
             rsi_color = "green" if rsi_latest < 30 else "red" if rsi_latest > 70 else "white"
             st.markdown(f"**RSI:** <span style='color:{rsi_color}'>{round(rsi_latest, 2)}</span>", unsafe_allow_html=True)
 
+            # --- Forecast with Prophet ---
+            df.reset_index(inplace=True)
+            df.rename(columns={"index": "Date"}, inplace=True)
+            forecast_df = forecast_with_prophet(df, periods=5)
+            df.set_index("Date", inplace=True)
+            full_chart = pd.concat([df[["Close"]], forecast_df.rename(columns={"yhat": "Forecast"})], axis=1)
+
             fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(df.index, df["Close"], label="Price", color="blue")
-            ax.plot(df.index, df["EMA9"], label="EMA9", color="orange")
-            ax.plot(df.index, df["EMA21"], label="EMA21", color="red")
-            ax.set_title(f"{custom_symbol.upper()} Price Chart ({timeframe})")
+            full_chart["Close"].plot(ax=ax, label="Price", color="blue")
+            full_chart["Forecast"].plot(ax=ax, label="Forecast", color="green", linestyle="dashed")
+            ax.set_title(f"{custom_symbol.upper()} Price + Forecast ({timeframe})")
             ax.legend()
             ax.grid(True)
             st.pyplot(fig)
