@@ -117,11 +117,11 @@ if st.button("Get Signal") or auto_refresh:
         recommendation = "Hold"
         explanation = "Market appears balanced without a clear direction."
 
-        if ema9_prev < ema21_prev and ema9_latest > ema21_latest and rsi_latest > 30:
+        if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
             signal = "Buy ✅"
             recommendation = "Buy"
             explanation = "The EMA crossover and RSI suggest bullish momentum."
-        elif ema9_prev > ema21_prev and ema9_latest < ema21_latest and rsi_latest < 70:
+        elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
             signal = "Sell ❌"
             recommendation = "Sell"
             explanation = "The EMA crossover and RSI suggest bearish momentum."
