@@ -3,8 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
-from io import StringIO
 
 st.set_page_config(page_title="Sipre Pro — Advanced Trading Signals", layout="wide")
 
@@ -82,12 +80,15 @@ def calculate_adx(df, period=14):
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(window=period).mean()
+
+    adx.name = "ADX"
     return adx
 
 def calculate_obv(df):
     obv = np.where(df['Close'] > df['Close'].shift(1), df['Volume'],
                    np.where(df['Close'] < df['Close'].shift(1), -df['Volume'], 0))
-    obv = pd.Series(obv).cumsum()
+    obv = pd.Series(obv, index=df.index).cumsum()
+    obv.name = "OBV"
     return obv
 
 def calculate_atr(df, period=14):
@@ -99,12 +100,16 @@ def calculate_atr(df, period=14):
     tr3 = (low - close.shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(window=period).mean()
+    atr.name = "ATR"
     return atr
 
 # --- Composite Signal Logic ---
 
 def generate_signal(df):
     signal = "Neutral"
+    if len(df) < 2:
+        return signal
+
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -123,7 +128,7 @@ def generate_signal(df):
     # ADX trend strength
     adx = latest['ADX']
 
-    # Bollinger Bands squeeze/breakout
+    # Bollinger Bands breakout
     close = latest['Close']
     upper_band = latest['BB_upper']
     lower_band = latest['BB_lower']
@@ -140,7 +145,7 @@ def generate_signal(df):
     elif (ema_fast > ema_slow) and (rsi < 70) and (macd_hist > 0) and (adx > 20):
         signal = "Buy ✅"
     # Hold
-    elif (adx < 20) or (rsi > 40 and rsi < 60):
+    elif (adx < 20) or (40 < rsi < 60):
         signal = "Hold 🤝"
     # Sell
     elif (ema_fast < ema_slow) and (rsi > 70) and (macd_hist < 0) and (adx > 20):
@@ -210,7 +215,7 @@ def main():
         - MACD Histogram: {latest['MACD_hist']:.4f}  
         - ADX: {latest['ADX']:.2f}  
         - ATR (Volatility): {latest['ATR']:.2f}  
-        - OBV (Volume): {latest['OBV']:.0f}
+        - OBV (Volume): {int(latest['OBV'])}
     """)
 
     # Plot price chart with overlays
@@ -248,19 +253,13 @@ def main():
     # Signal History Log
     st.subheader("📜 Signal History")
 
-    # Generate signal for each day in df
-    def generate_signal_row(row_index):
-        if row_index == 0:
-            return "Neutral"
-        prev = df.iloc[row_index - 1]
-        current = df.iloc[row_index]
-        # Reuse generate_signal logic on rolling slices
-        df_slice = df.iloc[:row_index+1]
-        return generate_signal(df_slice)
-
+    # Generate signal history for entire df
     signals = []
     for i in range(len(df)):
-        signals.append(generate_signal(df.iloc[:i+1]))
+        if i == 0:
+            signals.append("Neutral")
+        else:
+            signals.append(generate_signal(df.iloc[:i+1]))
 
     signal_history = pd.DataFrame({
         'Date': df.index,
