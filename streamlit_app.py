@@ -72,17 +72,15 @@ def predict_prices(df, days=5):
     predictions = model.predict(future_x).flatten()
     return future_dates, predictions
 
-# --- Main logic ---
 try:
     if st.button("Get Signal") or auto_refresh:
         interval = "1h" if timeframe in ["1d", "5d", "1mo"] else "1d"
         df = get_data(custom_symbol, timeframe, interval)
 
-        # Debug info - show columns and sample data
+        # Debug info
         st.write(f"Data Columns: {df.columns.tolist()}")
         st.write(df.head())
 
-        # Validate dataframe contents safely
         if df.empty:
             st.warning("⚠️ No data found for this symbol/timeframe. Try a different one.")
             st.stop()
@@ -91,19 +89,24 @@ try:
             st.warning("⚠️ 'Close' price data is not available for this symbol/timeframe.")
             st.stop()
 
-        # Check if Close column is all nulls (safe boolean check)
-        if df["Close"].isnull().all():
+        # Handle if df["Close"] is a DataFrame instead of Series
+        close_col = df["Close"]
+        if isinstance(close_col, pd.DataFrame):
+            close_series = close_col.iloc[:, 0]  # take first column if multiple
+        else:
+            close_series = close_col
+
+        # Use values.all() to get a single bool safely
+        if close_series.isnull().values.all():
             st.warning("⚠️ 'Close' price data contains only null values.")
             st.stop()
 
-        # Drop rows with missing Close prices
         df.dropna(subset=["Close"], inplace=True)
 
         if len(df) < 2:
             st.warning("⚠️ Not enough data points after cleaning.")
             st.stop()
 
-        # Calculate indicators
         df["EMA9"] = calculate_ema(df["Close"], 9)
         df["EMA21"] = calculate_ema(df["Close"], 21)
         df["RSI"] = calculate_rsi(df["Close"])
@@ -113,14 +116,12 @@ try:
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Ensure values are floats
         ema9_latest = float(latest["EMA9"])
         ema21_latest = float(latest["EMA21"])
         ema9_prev = float(prev["EMA9"])
         ema21_prev = float(prev["EMA21"])
         rsi_latest = float(latest["RSI"])
 
-        # Signal and recommendation with explicit boolean logic
         signal = "Neutral"
         recommendation = "Hold"
         explanation = "Market appears balanced without a clear direction."
@@ -134,7 +135,6 @@ try:
             recommendation = "Sell"
             explanation = "The EMA crossover and RSI suggest bearish momentum."
 
-        # Log Signal
         signal_log = {
             "Symbol": custom_symbol.upper(),
             "Timeframe": timeframe,
@@ -146,18 +146,15 @@ try:
         history_file = "signal_history.csv"
         df_log.to_csv(history_file, mode="a", header=not os.path.exists(history_file), index=False)
 
-        # Send Discord alert if signal present
         if signal != "Neutral":
             send_discord_alert(f"{custom_symbol.upper()} Signal: {signal} | RSI: {rsi_latest:.2f} | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-        # Display output
         st.subheader(f"Signal: {signal}")
         st.write(f"### Recommendation: **{recommendation}**")
         st.info(f"📊 Explanation: {explanation}")
         rsi_color = "green" if rsi_latest < 30 else "red" if rsi_latest > 70 else "white"
         st.markdown(f"**RSI:** <span style='color:{rsi_color}'>{round(rsi_latest, 2)}</span>", unsafe_allow_html=True)
 
-        # Prediction
         df = df.reset_index()
         if 'Date' not in df.columns:
             if 'index' in df.columns:
@@ -177,7 +174,6 @@ try:
         ax.grid(True)
         st.pyplot(fig)
 
-        # MACD plot
         df.set_index("Date", inplace=True)
         fig_macd, ax_macd = plt.subplots(figsize=(10, 3))
         ax_macd.plot(df.index, df["MACD"], label="MACD", color="purple")
@@ -188,12 +184,10 @@ try:
         ax_macd.grid(True)
         st.pyplot(fig_macd)
 
-        # Export history
         if os.path.exists(history_file):
             with open(history_file, "r") as f:
                 st.download_button("📥 Download Signal History", f.read(), file_name="signals.csv")
 
-    # Auto-refresh rerun
     if auto_refresh:
         time.sleep(60)
         st.experimental_rerun()
