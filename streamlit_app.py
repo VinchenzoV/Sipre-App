@@ -6,7 +6,7 @@ import os
 import time
 import requests
 from datetime import datetime, timedelta
-from fbprophet import Prophet
+from sklearn.linear_model import LinearRegression
 import numpy as np
 
 st.set_page_config(page_title="Sipre", layout="wide")
@@ -54,17 +54,18 @@ def send_discord_alert(message):
 def get_data(symbol, timeframe, interval):
     return yf.download(symbol, period=timeframe, interval=interval)
 
-# --- Forecasting with Prophet ---
-def forecast_with_prophet(df, periods=5):
+# --- Forecasting with Linear Regression ---
+def predict_prices(df, days=5):
     df = df.reset_index()
-    df_prophet = df[["Date", "Close"]].rename(columns={"Date": "ds", "Close": "y"})
-    model = Prophet(daily_seasonality=True)
-    model.fit(df_prophet)
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
-    return forecast[["ds", "yhat"]].set_index("ds")
+    df["timestamp"] = df.index.values.reshape(-1, 1)
+    X = np.array(range(len(df))).reshape(-1, 1)
+    y = df["Close"].values
+    model = LinearRegression().fit(X, y)
+    future_x = np.array(range(len(df), len(df) + days)).reshape(-1, 1)
+    future_dates = [df["Date"].iloc[-1] + timedelta(days=i + 1) for i in range(days)]
+    predictions = model.predict(future_x)
+    return future_dates, predictions
 
-# --- Signal generation and plotting ---
 if st.button("Get Signal") or auto_refresh:
     try:
         interval = "1h" if timeframe in ["1d", "5d", "1mo"] else "1d"
@@ -89,7 +90,7 @@ if st.button("Get Signal") or auto_refresh:
             ema21_prev = float(prev["EMA21"])
             rsi_latest = float(latest["RSI"])
 
-            # --- Generate Signal ---
+            # --- Generate Signal and Recommendation ---
             signal = "Neutral"
             recommendation = "Hold"
             explanation = "Market appears balanced without a clear direction."
@@ -126,22 +127,23 @@ if st.button("Get Signal") or auto_refresh:
             rsi_color = "green" if rsi_latest < 30 else "red" if rsi_latest > 70 else "white"
             st.markdown(f"**RSI:** <span style='color:{rsi_color}'>{round(rsi_latest, 2)}</span>", unsafe_allow_html=True)
 
-            # --- Forecast with Prophet ---
+            # --- Prediction ---
             df.reset_index(inplace=True)
             df.rename(columns={"index": "Date"}, inplace=True)
-            forecast_df = forecast_with_prophet(df, periods=5)
-            df.set_index("Date", inplace=True)
-            full_chart = pd.concat([df[["Close"]], forecast_df.rename(columns={"yhat": "Forecast"})], axis=1)
+            future_dates, predictions = predict_prices(df, days=5)
+            prediction_df = pd.DataFrame({"Date": future_dates, "Predicted": predictions})
+            chart_df = pd.concat([df[["Date", "Close"]].set_index("Date"), prediction_df.set_index("Date")], axis=1)
 
             fig, ax = plt.subplots(figsize=(10, 5))
-            full_chart["Close"].plot(ax=ax, label="Price", color="blue")
-            full_chart["Forecast"].plot(ax=ax, label="Forecast", color="green", linestyle="dashed")
+            chart_df["Close"].plot(ax=ax, label="Price", color="blue")
+            chart_df["Predicted"].plot(ax=ax, label="Forecast", color="green", linestyle="dashed")
             ax.set_title(f"{custom_symbol.upper()} Price + Forecast ({timeframe})")
             ax.legend()
             ax.grid(True)
             st.pyplot(fig)
 
             # --- MACD Plot ---
+            df.set_index("Date", inplace=True)
             fig_macd, ax_macd = plt.subplots(figsize=(10, 3))
             ax_macd.plot(df.index, df["MACD"], label="MACD", color="purple")
             ax_macd.plot(df.index, df["MACD_Signal"], label="Signal", color="pink")
