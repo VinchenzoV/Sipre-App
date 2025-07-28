@@ -13,18 +13,13 @@ import traceback
 st.set_page_config(page_title="Sipre", layout="wide")
 st.title("📈 Sipre — Trading Signal App (Live Yahoo Finance)")
 
-# --- Popular symbols + custom input ---
 popular_symbols = ["AAPL", "TSLA", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BTC-USD", "ETH-USD", "SPY"]
 symbol_choice = st.selectbox("Choose a popular symbol:", popular_symbols)
 custom_symbol = st.text_input("Or enter a custom symbol:", value=symbol_choice)
 
-# --- Timeframe selector ---
 timeframe = st.selectbox("Select timeframe:", ["1d", "5d", "1mo", "3mo", "6mo", "1y"])
-
-# --- Auto-refresh toggle ---
 auto_refresh = st.checkbox("🔄 Auto-refresh every 1 minute")
 
-# --- Indicator calculation functions ---
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -42,7 +37,6 @@ def calculate_macd(df):
     signal = macd.ewm(span=9).mean()
     return macd, signal
 
-# --- Alerts (Discord) ---
 def send_discord_alert(message):
     webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
     try:
@@ -50,12 +44,10 @@ def send_discord_alert(message):
     except:
         st.warning("Failed to send Discord alert.")
 
-# --- Cached data fetch ---
 @st.cache_data(ttl=300)
 def get_data(symbol, timeframe, interval):
     return yf.download(symbol, period=timeframe, interval=interval)
 
-# --- Forecasting with Linear Regression ---
 def predict_prices(df, days=5):
     df = df.reset_index()
     if 'Date' not in df.columns:
@@ -77,7 +69,6 @@ try:
         interval = "1h" if timeframe in ["1d", "5d", "1mo"] else "1d"
         df = get_data(custom_symbol, timeframe, interval)
 
-        # Debug info
         st.write(f"Data Columns: {df.columns.tolist()}")
         st.write(df.head())
 
@@ -85,20 +76,15 @@ try:
             st.warning("⚠️ No data found for this symbol/timeframe. Try a different one.")
             st.stop()
 
+        # Fix for MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            if ('Close', '') in df.columns:
+                df.columns = df.columns.droplevel(1)
+            else:
+                df.columns = df.columns.get_level_values(0)
+
         if "Close" not in df.columns:
             st.warning("⚠️ 'Close' price data is not available for this symbol/timeframe.")
-            st.stop()
-
-        # Handle if df["Close"] is a DataFrame instead of Series
-        close_col = df["Close"]
-        if isinstance(close_col, pd.DataFrame):
-            close_series = close_col.iloc[:, 0]  # take first column if multiple
-        else:
-            close_series = close_col
-
-        # Use values.all() to get a single bool safely
-        if close_series.isnull().values.all():
-            st.warning("⚠️ 'Close' price data contains only null values.")
             st.stop()
 
         df.dropna(subset=["Close"], inplace=True)
