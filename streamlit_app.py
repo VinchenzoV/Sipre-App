@@ -82,7 +82,7 @@ def calculate_adx(df, period=14):
 
     adx = dx.rolling(window=period, min_periods=period).mean()
 
-    adx = adx.reindex(df.index)
+    adx = adx.reindex(df.index).astype(float)
     adx.name = "ADX"
     return adx
 
@@ -115,44 +115,28 @@ def generate_signal(df):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # EMA crossover trend
     ema_fast = latest['EMA12']
     ema_slow = latest['EMA26']
     prev_ema_fast = prev['EMA12']
     prev_ema_slow = prev['EMA26']
 
-    # RSI momentum
     rsi = latest['RSI']
-
-    # MACD histogram
     macd_hist = latest['MACD_hist']
-
-    # ADX trend strength
     adx = latest['ADX']
-
-    # Bollinger Bands breakout
     close = latest['Close']
     upper_band = latest['BB_upper']
     lower_band = latest['BB_lower']
-
-    # Volume OBV confirmation
     obv = latest['OBV']
     prev_obv = prev['OBV']
 
-    # Signal Rules:
-    # Strong Buy
     if (prev_ema_fast < prev_ema_slow) and (ema_fast > ema_slow) and (rsi < 70) and (macd_hist > 0) and (adx > 25) and (close > upper_band) and (obv > prev_obv):
         signal = "Strong Buy 🔥"
-    # Buy
     elif (ema_fast > ema_slow) and (rsi < 70) and (macd_hist > 0) and (adx > 20):
         signal = "Buy ✅"
-    # Hold
     elif (adx < 20) or (40 < rsi < 60):
         signal = "Hold 🤝"
-    # Sell
     elif (ema_fast < ema_slow) and (rsi > 70) and (macd_hist < 0) and (adx > 20):
         signal = "Sell ❌"
-    # Strong Sell
     elif (prev_ema_fast > prev_ema_slow) and (ema_fast < ema_slow) and (rsi > 30) and (macd_hist < 0) and (adx > 25) and (close < lower_band) and (obv < prev_obv):
         signal = "Strong Sell 🚨"
     else:
@@ -160,15 +144,11 @@ def generate_signal(df):
 
     return signal
 
-# --- Load Data ---
-
 @st.cache_data(ttl=300)
 def load_data(symbol, period, interval):
     df = yf.download(symbol, period=period, interval=interval)
     df.dropna(inplace=True)
     return df
-
-# --- Main app ---
 
 def main():
     st.markdown("### Market Data & Analytics")
@@ -184,7 +164,6 @@ def main():
         st.error(f"No data found for {symbol}. Try another symbol or timeframe.")
         return
 
-    # Calculate indicators
     df['EMA12'] = calculate_ema(df['Close'], 12)
     df['EMA26'] = calculate_ema(df['Close'], 26)
     df['RSI'] = calculate_rsi(df['Close'])
@@ -200,13 +179,10 @@ def main():
     df['OBV'] = calculate_obv(df)
     df['ATR'] = calculate_atr(df)
 
-    # Drop rows with NaN indicators AFTER assignment
     df.dropna(inplace=True)
 
-    # Generate latest signal
     signal = generate_signal(df)
 
-    # Display summary
     st.subheader(f"Symbol: {symbol}")
     st.markdown(f"**Latest Signal:** {signal}")
 
@@ -220,7 +196,6 @@ def main():
         - OBV (Volume): {int(latest['OBV'])}
     """)
 
-    # Plot price chart with overlays
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df.index, df['Close'], label='Close Price', color='blue')
     ax.plot(df.index, df['EMA12'], label='EMA 12', color='orange')
@@ -233,7 +208,6 @@ def main():
     ax.grid(True)
     st.pyplot(fig)
 
-    # MACD Chart
     fig2, ax2 = plt.subplots(figsize=(12, 3))
     ax2.plot(df.index, df['MACD'], label='MACD Line', color='purple')
     ax2.plot(df.index, df['MACD_signal'], label='Signal Line', color='green')
@@ -242,7 +216,6 @@ def main():
     ax2.grid(True)
     st.pyplot(fig2)
 
-    # RSI Chart
     fig3, ax3 = plt.subplots(figsize=(12, 2))
     ax3.plot(df.index, df['RSI'], label='RSI', color='magenta')
     ax3.axhline(70, color='red', linestyle='--')
@@ -252,10 +225,8 @@ def main():
     ax3.grid(True)
     st.pyplot(fig3)
 
-    # Signal History Log
     st.subheader("📜 Signal History")
 
-    # Generate signal history for entire df
     signals = []
     for i in range(len(df)):
         if i == 0:
@@ -271,11 +242,10 @@ def main():
 
     st.dataframe(signal_history.tail(20))
 
-    # CSV export
     csv = signal_history.to_csv(index=False)
     st.download_button(label="Export Signal History CSV", data=csv, file_name=f"{symbol}_signal_history.csv", mime="text/csv")
 
-if auto_refresh:
-    st.experimental_rerun()
+    if auto_refresh:
+        st.experimental_rerun()
 
 main()
