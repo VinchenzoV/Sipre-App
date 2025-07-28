@@ -1,123 +1,90 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 import plotly.graph_objects as go
-import os
+import datetime
 
-# --- Page setup ---
-st.set_page_config(page_title="Sipre", layout="wide")
-st.title("📊 Sipre — Live Trading Dashboard (Single Symbol)")
+st.set_page_config(page_title="Sipre - Trading Signal App", layout="wide")
 
-# --- Input UI ---
-popular_symbols = ["AAPL", "TSLA", "MSFT", "SPY", "BTC-USD"]
-default_symbol = popular_symbols[0]
-symbol_input = st.text_input("Enter a symbol (e.g. AAPL, BTC-USD, ETH-USD, EURUSD=X):", value=default_symbol)
-symbol = symbol_input.strip().upper()
-timeframe = st.selectbox("Timeframe:", ["1d", "5d", "1mo", "3mo", "6mo", "1y"])
-interval = st.selectbox("Interval:", ["15m", "30m", "1h", "1d"])
-auto_refresh = st.checkbox("🔄 Auto-refresh every time you open the page", value=False)
+st.title("📈 Sipre - Live Trading Signal Dashboard")
+st.markdown("Enter a stock, crypto, or forex symbol below (e.g., AAPL, BTC-USD, EURUSD=X):")
 
-# --- Fix invalid interval + timeframe combos ---
-if timeframe in ["6mo", "1y"] and interval in ["15m", "30m", "1h"]:
-    st.warning("⚠️ Interval too small for selected timeframe. Try 1d.")
-    st.stop()
+symbol = st.text_input("Symbol", value="AAPL").upper()
+interval = st.selectbox("Interval", ["1m", "5m", "15m", "30m", "1h", "1d"], index=4)
+period = st.selectbox("Period", ["1d", "5d", "1mo", "3mo", "6mo", "1y"], index=3)
 
-# --- Analysis Functions ---
-def calculate_ema(series, span):
-    return series.ewm(span=span, adjust=False).mean()
-
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_macd(price):
-    ema12 = price.ewm(span=12, adjust=False).mean()
-    ema26 = price.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    return macd, signal
-
-def get_news_headlines(symbol):
+@st.cache_data(show_spinner=False)
+def fetch_data(symbol, interval, period):
     try:
-        url = f"https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-        page = requests.get(url)
-        soup = BeautifulSoup(page.content, "html.parser")
-        headlines = soup.find_all("h3", limit=3)
-        return [h.text.strip() for h in headlines if h.text.strip()]
-    except:
-        return ["No news found"]
-
-def send_telegram_alert(message):
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not bot_token or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message}
-    try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        st.error(f"⚠️ Telegram alert failed: {e}")
-
-# --- Main Analysis ---
-if st.button("Analyze") or auto_refresh:
-    df = yf.download(symbol, period=timeframe, interval=interval)
-
-    if df.empty or len(df) < 10:
-        st.warning("⚠️ No data or too little data found. Try a different symbol or timeframe.")
-    else:
-        df["EMA9"] = calculate_ema(df["Close"], 9)
-        df["EMA21"] = calculate_ema(df["Close"], 21)
-        df["RSI"] = calculate_rsi(df["Close"])
-        df["MACD"], df["MACD_Signal"] = calculate_macd(df["Close"])
+        df = yf.download(tickers=symbol, interval=interval, period=period, progress=False)
+        if df.empty:
+            return None
         df.dropna(inplace=True)
+        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+        df["EMA21"] = df["Close"].ewm(span=21, adjust=False).mean()
+        delta = df["Close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+        return df
+    except Exception as e:
+        return None
 
-        if len(df) < 2:
-            st.warning("⚠️ Not enough valid data to analyze. Try a longer timeframe or different symbol.")
-            st.stop()
+if symbol:
+    df = fetch_data(symbol, interval, period)
 
+    if df is None or df.empty:
+        st.warning(f"⚠️ No data for: {symbol}")
+    else:
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        signal = "Neutral"
-        suggestion = "⚪ Suggestion: Hold / Wait"
+        # Safely extract float values
+        ema9_prev = float(prev["EMA9"])
+        ema21_prev = float(prev["EMA21"])
+        ema9_latest = float(latest["EMA9"])
+        ema21_latest = float(latest["EMA21"])
+        rsi_latest = float(latest["RSI"])
 
-        if prev["EMA9"] < prev["EMA21"] and latest["EMA9"] > latest["EMA21"] and latest["RSI"] > 30:
-            signal = "Buy ✅"
-            suggestion = "🟢 Suggestion: Buy — Uptrend and momentum building"
-        elif prev["EMA9"] > prev["EMA21"] and latest["EMA9"] < latest["EMA21"] and latest["RSI"] < 70:
-            signal = "Sell ❌"
-            suggestion = "🔴 Suggestion: Sell — Weakening price action"
+        signal = "HOLD"
+        suggestion = "No clear signal."
 
-        st.subheader(f"Signal: {signal}")
-        st.write(f"**Price:** {round(latest['Close'], 2)}")
-        st.write(f"**RSI:** {round(latest['RSI'], 2)} | **MACD:** {round(latest['MACD'], 2)}")
-        st.markdown(f"<div style='color:yellow; font-weight:bold'>{suggestion}</div>", unsafe_allow_html=True)
+        if ema9_prev < ema21_prev and ema9_latest > ema21_latest and rsi_latest > 30:
+            signal = "BUY"
+            suggestion = "🔼 EMA crossover + RSI improving → Consider Buying"
+        elif ema9_prev > ema21_prev and ema9_latest < ema21_latest and rsi_latest < 70:
+            signal = "SELL"
+            suggestion = "🔽 EMA crossover down + RSI weakening → Consider Selling"
 
-        # --- Chart ---
+        col1, col2 = st.columns(2)
+        col1.metric("Latest Close", f"${latest['Close']:.2f}")
+        col2.metric("Signal", signal)
+
+        st.markdown(f"### 💡 Suggestion: {suggestion}")
+
+        st.markdown("### 📊 Price Chart with EMA9 & EMA21")
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Price", line=dict(color="blue")))
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA9"], name="EMA9", line=dict(color="orange")))
-        fig.add_trace(go.Scatter(x=df.index, y=df["EMA21"], name="EMA21", line=dict(color="red")))
-        fig.update_layout(
-            title=f"{symbol} — Price with EMAs",
-            xaxis_title="Time",
-            yaxis_title="Price",
-            height=500,
-            template="plotly_white"
-        )
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="Candlestick"
+        ))
+        fig.add_trace(go.Scatter(x=df.index, y=df["EMA9"], mode='lines', name='EMA9'))
+        fig.add_trace(go.Scatter(x=df.index, y=df["EMA21"], mode='lines', name='EMA21'))
+        fig.update_layout(xaxis_rangeslider_visible=False, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- News ---
-        st.markdown("---")
-        st.subheader("📰 Recent News")
-        for headline in get_news_headlines(symbol):
-            st.markdown(f"- {headline}")
+        st.markdown("### 📉 RSI Indicator")
+        fig_rsi = go.Figure()
+        fig_rsi.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode='lines', name='RSI'))
+        fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
+        fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+        fig_rsi.update_layout(height=300)
+        st.plotly_chart(fig_rsi, use_container_width=True)
 
-        # --- Telegram Alert ---
-        send_telegram_alert(f"{symbol} Signal: {signal} | Price: {round(latest['Close'], 2)}")
+        with st.expander("📄 Show Raw Data"):
+            st.dataframe(df.tail(50), use_container_width=True)
