@@ -54,10 +54,9 @@ def send_discord_alert(message):
 def get_data(symbol, timeframe, interval):
     return yf.download(symbol, period=timeframe, interval=interval)
 
-# --- Forecasting with Linear Regression ---
+# --- Forecasting with Linear Regression (fixed) ---
 def predict_prices(df, days=5):
     df = df.reset_index()
-    df["timestamp"] = df.index.values.reshape(-1, 1)
     X = np.array(range(len(df))).reshape(-1, 1)
     y = df["Close"].values
     model = LinearRegression().fit(X, y)
