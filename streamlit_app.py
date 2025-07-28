@@ -54,9 +54,16 @@ def send_discord_alert(message):
 def get_data(symbol, timeframe, interval):
     return yf.download(symbol, period=timeframe, interval=interval)
 
-# --- Forecasting with Linear Regression (fixed) ---
+# --- Forecasting with Linear Regression (fixed 'Date' column) ---
 def predict_prices(df, days=5):
     df = df.reset_index()
+    # Ensure 'Date' column exists
+    if 'Date' not in df.columns:
+        if 'index' in df.columns:
+            df.rename(columns={"index": "Date"}, inplace=True)
+        else:
+            df['Date'] = pd.to_datetime(df.index)
+
     X = np.array(range(len(df))).reshape(-1, 1)
     y = df["Close"].values
     model = LinearRegression().fit(X, y)
@@ -127,8 +134,12 @@ if st.button("Get Signal") or auto_refresh:
             st.markdown(f"**RSI:** <span style='color:{rsi_color}'>{round(rsi_latest, 2)}</span>", unsafe_allow_html=True)
 
             # --- Prediction ---
-            df.reset_index(inplace=True)
-            df.rename(columns={"index": "Date"}, inplace=True)
+            df = df.reset_index()
+            if 'Date' not in df.columns:
+                if 'index' in df.columns:
+                    df.rename(columns={"index": "Date"}, inplace=True)
+                else:
+                    df['Date'] = pd.to_datetime(df.index)
             future_dates, predictions = predict_prices(df, days=5)
             prediction_df = pd.DataFrame({"Date": future_dates, "Predicted": predictions})
             chart_df = pd.concat([df[["Date", "Close"]].set_index("Date"), prediction_df.set_index("Date")], axis=1)
