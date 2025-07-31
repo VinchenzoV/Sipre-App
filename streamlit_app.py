@@ -15,7 +15,6 @@ import traceback
 st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-# Load symbols with fallback (using a reliable source)
 @st.cache_data
 def load_symbols():
     try:
@@ -23,19 +22,13 @@ def load_symbols():
         df = pd.read_csv(url)
         return df['Symbol'].dropna().str.upper().tolist()
     except Exception:
-        # fallback hardcoded list
         return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
 
 symbols_list = load_symbols()
 
-# 1. User types partial symbol here:
 user_input = st.text_input("Enter symbol (type to filter):").upper().strip()
 
-# 2. Dynamically filter the list based on input and show dropdown:
-if user_input:
-    filtered_symbols = [s for s in symbols_list if user_input in s]
-else:
-    filtered_symbols = symbols_list
+filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
 
 if filtered_symbols:
     symbol = st.selectbox("Select symbol:", filtered_symbols, index=0)
@@ -123,9 +116,22 @@ if symbol:
             st.markdown(fetch_news_sentiment(symbol))
 
             st.subheader("📅 Prophet Forecast (Next 30 Days)")
-            prophet_df = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
 
-            # Clean data to fix Prophet error:
+            # Debug info for Prophet dataframe creation:
+            prophet_df = df.reset_index()
+            st.write("Columns after reset_index:", prophet_df.columns.tolist())
+            st.write("Sample data:", prophet_df.head())
+
+            # Detect index name dynamically for datetime column
+            datetime_col = df.index.name if df.index.name else 'Date'
+            if datetime_col not in prophet_df.columns:
+                # fallback to first column (usually Date after reset_index)
+                datetime_col = prophet_df.columns[0]
+
+            prophet_df = prophet_df[[datetime_col, 'Close']].rename(columns={datetime_col: 'ds', 'Close': 'y'})
+
+            st.write("Prepared DataFrame for Prophet:", prophet_df.head())
+
             prophet_df['y'] = pd.to_numeric(prophet_df['y'], errors='coerce')
             prophet_df = prophet_df.dropna(subset=['y'])
 
