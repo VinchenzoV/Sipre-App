@@ -123,19 +123,31 @@ if st.button("Get Prediction & Signal"):
         st.subheader("📰 News Sentiment (Mocked)")
         st.markdown(fetch_news_sentiment(symbol))
 
+        # --- Prophet Forecast Section ---
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
 
         df_reset = df.reset_index()
         st.write("Debug: df_reset columns:", df_reset.columns.tolist())
 
-        if 'Close' in df_reset.columns:
-            close_col = 'Close'
-        else:
-            close_cols = [col for col in df_reset.columns if 'Close' in str(col)]
-            if len(close_cols) == 0:
+        if isinstance(df_reset.columns, pd.MultiIndex):
+            close_col = None
+            for col in df_reset.columns:
+                if col[0].lower() == 'close' and col[1].upper() == symbol.upper():
+                    close_col = col
+                    break
+            if close_col is None:
+                for col in df_reset.columns:
+                    if col[0].lower() == 'close':
+                        close_col = col
+                        break
+            if close_col is None:
                 st.error("No 'Close' column found in data!")
                 st.stop()
-            close_col = close_cols[0]
+        else:
+            close_col = 'Close'
+            if close_col not in df_reset.columns:
+                st.error("No 'Close' column found in data!")
+                st.stop()
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
@@ -149,13 +161,18 @@ if st.button("Get Prediction & Signal"):
             m.fit(prophet_df)
             future = m.make_future_dataframe(periods=30)
             forecast = m.predict(future)
+
+            # Prophet chart with matplotlib
             fig1 = m.plot(forecast)
             st.pyplot(fig1.figure)
 
+            # Show forecast table and download option
             st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
+        # --- LSTM Forecast Section ---
         st.subheader("🤖 LSTM Future Price Prediction")
+
         try:
             X, y, scaler = prepare_lstm_data(df)
             model = Sequential()
@@ -181,6 +198,7 @@ if st.button("Get Prediction & Signal"):
                 'Predicted Close': future_prices
             })
 
+            # Plot combined historical + forecast using Plotly
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
             fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
@@ -188,6 +206,7 @@ if st.button("Get Prediction & Signal"):
             fig2.update_layout(title=f"{symbol} — Combined Forecast View")
             st.plotly_chart(fig2)
 
+            # Show LSTM forecast table and download option
             st.dataframe(df_future, use_container_width=True)
             st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
