@@ -124,10 +124,10 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
-        prophet_df = df.reset_index()
+        df_reset = df.reset_index()
         prophet_df = pd.DataFrame({
-            'ds': pd.to_datetime(prophet_df[prophet_df.columns[0]]),
-            'y': pd.to_numeric(prophet_df['Close'], errors='coerce')
+            'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
+            'y': pd.to_numeric(df_reset['Close'], errors='coerce')
         }).dropna()
 
         if prophet_df.shape[0] < 30:
