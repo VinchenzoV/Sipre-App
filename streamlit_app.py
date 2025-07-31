@@ -3,18 +3,20 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from prophet import Prophet
+from prophet.serialize import model_to_json, model_from_json
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 import requests
 import plotly.graph_objs as go
 import traceback
 
-st.set_page_config(page_title="📈 Sipre Pro — Predictive Trading Signal Dashboard", layout="wide")
-st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
+st.set_page_config(page_title="📈 Sipre Pro — Smart Predictive Trading Dashboard", layout="wide")
+st.title("📈 Sipre Pro — Smart Predictive Trading Signal Dashboard")
 
-@st.cache_data
+# --- Utils ---
+@st.cache_data(show_spinner=False)
 def load_symbols():
     try:
         url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
@@ -23,28 +25,6 @@ def load_symbols():
     except Exception:
         # fallback list
         return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
-
-symbols_list = load_symbols()
-
-# --- Sidebar Inputs ---
-with st.sidebar:
-    st.header("Select & Configure")
-    user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
-    filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
-    selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
-    symbol = user_input if user_input else selected_symbol
-
-    timeframe = st.selectbox("Select historical data timeframe:", ["1mo", "3mo", "6mo", "1y"])
-    alert_email = st.text_input("Email for alerts (optional):")
-
-    # User chooses prediction horizon and unit
-    pred_horizon_num = st.number_input("Prediction horizon:", min_value=1, max_value=90, value=15, step=1)
-    pred_horizon_unit = st.selectbox("Horizon unit:", ["Days", "Months"])
-    pred_horizon_days = pred_horizon_num if pred_horizon_unit == "Days" else pred_horizon_num * 30
-
-if not symbol:
-    st.warning("Please enter or select a valid symbol in the sidebar.")
-    st.stop()
 
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
@@ -56,222 +36,235 @@ def calculate_rsi(prices, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = calculate_ema(prices, fast)
+    ema_slow = calculate_ema(prices, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = calculate_ema(macd_line, signal)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
 def prepare_lstm_data(df, sequence_length=60):
-    n = df.shape[0]
-    if n <= sequence_length:
-        sequence_length = max(10, n - 1)
-        if sequence_length < 10:
-            raise ValueError("Still too little data for LSTM.")
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df[['Close']])
+    # Use multiple features for richer input: Close, Volume, EMA9, EMA21, RSI, MACD Histogram
+    features = ['Close', 'Volume', 'EMA9', 'EMA21', 'RSI', 'MACD_Hist']
+    data = df[features].copy()
+    data.fillna(method='ffill', inplace=True)
+    scaler = MinMaxScaler()
+    scaled = scaler.fit_transform(data)
+    
     X, y = [], []
-    for i in range(sequence_length, len(scaled_data)):
-        X.append(scaled_data[i-sequence_length:i])
-        y.append(scaled_data[i])
-    X = np.array(X)
-    y = np.array(y)
-    if X.ndim != 3:
-        raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
+    for i in range(sequence_length, len(scaled)):
+        X.append(scaled[i-sequence_length:i])
+        y.append(scaled[i, 0])  # Predict scaled 'Close'
+    X, y = np.array(X), np.array(y)
     return X, y, scaler
 
 def fetch_news_sentiment(symbol):
-    # Placeholder for real sentiment
+    # For demo, keep placeholder - ideally integrate real sentiment API
     try:
         url = f"https://finance.yahoo.com/quote/{symbol}"
-        response = requests.get(url)
+        requests.get(url, timeout=2)
         return "Sentiment: [Mock sentiment placeholder]"
     except:
         return "Sentiment unavailable"
 
 def send_email_alert(recipient, signal, symbol):
+    # Placeholder for real email alert integration
     try:
-        st.success(f"Alert email would be sent to {recipient} (demo mode).")
+        st.success(f"Alert email would be sent to {recipient} for {signal} on {symbol} (demo mode).")
     except:
         st.error("Failed to send email alert.")
 
-# --- Main Content ---
+def backtest_signal(df):
+    # Basic backtesting on EMA9/EMA21 crossover + RSI filter signals
+    df = df.copy()
+    df['Signal'] = 0
+    df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
+    df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
+    
+    df['Returns'] = df['Close'].pct_change()
+    df['Strategy_Returns'] = df['Returns'] * df['Signal'].shift(1)
+    
+    cumulative_returns = (1 + df[['Returns', 'Strategy_Returns']].fillna(0)).cumprod() - 1
+    return cumulative_returns
 
-if st.button("Get Prediction & Signal"):
+# --- Sidebar ---
+with st.sidebar:
+    st.header("Configure Prediction")
+    symbols_list = load_symbols()
+    user_input = st.text_input("Enter symbol (e.g. AAPL, TSLA, LNR.TO):", "AAPL").upper().strip()
+    filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
+    selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
+    symbol = user_input if user_input else selected_symbol
 
+    timeframe = st.selectbox("Historical data timeframe:", ["1mo", "3mo", "6mo", "1y"], index=2)
+
+    alert_email = st.text_input("Email for alerts (optional):")
+
+    pred_horizon_num = st.number_input("Prediction horizon:", min_value=1, max_value=90, value=15, step=1)
+    pred_horizon_unit = st.selectbox("Horizon unit:", ["Days", "Months"], index=0)
+    pred_horizon_days = pred_horizon_num if pred_horizon_unit == "Days" else pred_horizon_num * 30
+
+    st.markdown("---")
+    st.markdown("**Note:** Predictions use LSTM with multiple indicators & Prophet with advanced settings.")
+
+if not symbol:
+    st.warning("Please enter or select a valid symbol in the sidebar.")
+    st.stop()
+
+if st.button("Run Predictions"):
+
+    # --- Data Download ---
     try:
-        # Fetch data
-        timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
-        for tf in timeframes_to_try:
-            df = yf.download(symbol, period=tf, interval="1d", progress=False)
-            if len(df) >= 30:
-                st.info(f"Using timeframe: {tf}")
-                break
-        else:
-            st.warning("⚠️ Not enough data available for this symbol.")
+        df = yf.download(symbol, period=timeframe, interval="1d", progress=False)
+        if df.empty or len(df) < 30:
+            st.error("Not enough data to perform prediction.")
             st.stop()
 
         df.dropna(inplace=True)
-
         # Indicators
         df['EMA9'] = calculate_ema(df['Close'], 9)
         df['EMA21'] = calculate_ema(df['Close'], 21)
         df['RSI'] = calculate_rsi(df['Close'])
-        df.dropna(inplace=True)
+        df['MACD_Line'], df['MACD_Signal'], df['MACD_Hist'] = calculate_macd(df['Close'])
 
-        # Latest values for signal
+        df.dropna(inplace=True)
+        
+        # Signal
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        ema9_latest = float(latest["EMA9"])
-        ema21_latest = float(latest["EMA21"])
-        ema9_prev = float(prev["EMA9"])
-        ema21_prev = float(prev["EMA21"])
-        rsi_latest = float(latest["RSI"])
-
         signal = "Neutral"
-        if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
+        if (prev['EMA9'] < prev['EMA21']) and (latest['EMA9'] > latest['EMA21']) and (latest['RSI'] > 30):
             signal = "Buy ✅"
-        elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
+        elif (prev['EMA9'] > prev['EMA21']) and (latest['EMA9'] < latest['EMA21']) and (latest['RSI'] < 70):
             signal = "Sell ❌"
 
-        st.subheader(f"📌 Signal for {symbol}: {signal}")
-        st.markdown(f"**RSI:** {round(rsi_latest, 2)}")
+        # Show Signal & Basic Info
+        st.markdown(f"### Trading Signal for {symbol}: {signal}")
+        st.markdown(f"- **RSI:** {latest['RSI']:.2f}")
+        st.markdown(f"- **EMA9:** {latest['EMA9']:.2f}")
+        st.markdown(f"- **EMA21:** {latest['EMA21']:.2f}")
+        st.markdown(f"- **MACD Histogram:** {latest['MACD_Hist']:.4f}")
 
         if alert_email and signal != "Neutral":
             send_email_alert(alert_email, signal, symbol)
 
-        st.subheader("📰 News Sentiment (Mocked)")
-        st.markdown(fetch_news_sentiment(symbol))
+        st.markdown("---")
+
+        # --- Backtesting ---
+        st.subheader("Backtesting Strategy Performance")
+        cumulative_returns = backtest_signal(df)
+        fig_backtest = go.Figure()
+        fig_backtest.add_trace(go.Scatter(x=cumulative_returns.index, y=cumulative_returns['Returns'], mode='lines', name='Buy & Hold'))
+        fig_backtest.add_trace(go.Scatter(x=cumulative_returns.index, y=cumulative_returns['Strategy_Returns'], mode='lines', name='EMA+RSI Strategy'))
+        fig_backtest.update_layout(
+            yaxis_title="Cumulative Returns",
+            xaxis_title="Date",
+            height=400,
+            legend=dict(x=0, y=1)
+        )
+        st.plotly_chart(fig_backtest, use_container_width=True)
+
+        # --- Tabs for Prophet & LSTM ---
+        tabs = st.tabs(["Prophet Forecast", "LSTM Forecast"])
 
         # --- Prophet Forecast ---
-        st.subheader(f"📅 Prophet Forecast (Next {pred_horizon_days} Days)")
+        with tabs[0]:
+            st.subheader(f"Prophet Forecast (Next {pred_horizon_days} Days)")
+            df_reset = df.reset_index()
+            prices = df_reset['Close'].values.flatten()
+            dates = pd.to_datetime(df_reset['Date'])
 
-        df_reset = df.reset_index()
+            # Prepare prophet dataframe with log transform
+            prophet_df = pd.DataFrame({
+                'ds': dates,
+                'y': np.log(prices.clip(min=1))
+            }).dropna()
 
-        # Identify 'Close' column
-        if isinstance(df_reset.columns, pd.MultiIndex):
-            close_col = None
-            for col in df_reset.columns:
-                if col[0].lower() == 'close':
-                    close_col = col
-                    break
-            if close_col is None:
-                st.error("No 'Close' column found.")
-                st.stop()
-        else:
-            close_col = 'Close'
-            if close_col not in df_reset.columns:
-                st.error("No 'Close' column found.")
-                st.stop()
+            if len(prophet_df) < 30:
+                st.warning("Not enough data for Prophet forecasting.")
+            else:
+                # Use holidays & uncertainty settings
+                m = Prophet(daily_seasonality=True, weekly_seasonality=True, yearly_seasonality=True, interval_width=0.95)
+                m.fit(prophet_df)
 
-        # Clip close prices so no zero or negative before log
-        min_price_clip = max(1.0, df_reset[close_col].min())
-        prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
+                future = m.make_future_dataframe(periods=pred_horizon_days)
+                forecast = m.predict(future)
 
-        prophet_df = pd.DataFrame({
-            'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped.values.flatten())  # fix: flatten to 1D array
-        }).dropna()
+                forecast['yhat_exp'] = np.exp(forecast['yhat'])
+                forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(1e-3)))
+                forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-        st.write("Sample of data used for Prophet:")
-        st.dataframe(prophet_df.head())
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
+                fig.add_trace(go.Scatter(
+                    x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
+                    y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
+                    fill='toself',
+                    fillcolor='rgba(0,100,80,0.2)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    hoverinfo="skip",
+                    showlegend=True,
+                    name='Confidence Interval'
+                ))
+                fig.update_layout(
+                    title=f"{symbol} Prophet Forecast",
+                    yaxis_title="Price (USD)",
+                    xaxis_title="Date"
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-        if prophet_df.shape[0] < 30:
-            st.warning("Not enough data for Prophet forecasting.")
-        else:
-            m = Prophet()
-            m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=pred_horizon_days)
-            forecast = m.predict(future)
-
-            # Exponentiate forecast results carefully
-            min_positive = 1e-3
-            forecast['yhat_exp'] = np.exp(forecast['yhat'])
-            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
-            forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
-
-            fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
-            fig1.add_trace(go.Scatter(
-                x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
-                y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
-                fill='toself',
-                fillcolor='rgba(0,100,80,0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                hoverinfo="skip",
-                showlegend=True,
-                name='Confidence Interval'
-            ))
-            fig1.update_layout(title=f"{symbol} Prophet Forecast (Next {pred_horizon_days} Days)",
-                               yaxis_title='Price (USD)',
-                               xaxis_title='Date')
-            st.plotly_chart(fig1)
-
-            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
-            st.download_button("📥 Download Prophet Forecast CSV", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
+                st.download_button("📥 Download Prophet Forecast CSV", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
-        st.subheader(f"🤖 LSTM Future Price Prediction (Next {pred_horizon_days} Days)")
+        with tabs[1]:
+            st.subheader(f"LSTM Future Price Prediction (Next {pred_horizon_days} Days)")
+            try:
+                seq_len = min(60, len(df) - 1)
+                X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
-        try:
-            if df.shape[0] < 50:
-                raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
+                # Build LSTM Model with Dropout
+                model = Sequential([
+                    LSTM(64, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
+                    Dropout(0.2),
+                    LSTM(32),
+                    Dropout(0.2),
+                    Dense(1)
+                ])
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(X, y, epochs=15, batch_size=32, verbose=0)
 
-            seq_len = min(60, df.shape[0] - 1)
-            X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
+                future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
+                future_preds = []
+                for _ in range(pred_horizon_days):
+                    pred = model.predict(future_input, verbose=0)[0][0]
+                    future_preds.append(pred)
+                    pred_array = np.array([[[pred]]], dtype=np.float32)
+                    future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-            # Model expects 3D input shape (samples, timesteps, features)
-            if len(X.shape) != 3:
-                raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
+                future_prices = scaler.inverse_transform(np.hstack([np.array(future_preds).reshape(-1,1),
+                    np.zeros((pred_horizon_days, X.shape[2]-1))]))[:, 0]
 
-            model = Sequential()
-            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
-            model.add(LSTM(units=50))
-            model.add(Dense(1))
-            model.compile(optimizer='adam', loss='mean_squared_error')
+                last_close = df['Close'].iloc[-1]
+                clipped_prices = np.clip(future_prices, last_close * 0.9, None)
 
-            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+                future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=pred_horizon_days, freq='D')
+                df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': clipped_prices})
 
-            future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
-            future_preds = []
-            for _ in range(pred_horizon_days):
-                pred = model.predict(future_input, verbose=0)[0][0]
-                future_preds.append(pred)
-                pred_array = np.array([[[pred]]], dtype=np.float32)
-                future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
+                fig_lstm = go.Figure()
+                fig_lstm.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Historical"))
+                fig_lstm.add_trace(go.Scatter(x=df_future['Date'], y=df_future['Predicted Close'], mode='lines+markers', name="LSTM Forecast"))
+                fig_lstm.update_layout(title=f"{symbol} LSTM Price Prediction", yaxis_title="Price (USD)", xaxis_title="Date")
+                st.plotly_chart(fig_lstm, use_container_width=True)
 
-            future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
-            last_close = df['Close'].iloc[-1]
+                st.dataframe(df_future, use_container_width=True)
+                st.download_button("📥 Download LSTM Forecast CSV", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
-            # Prevent unrealistic drop below 90% of last close
-            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-
-            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=pred_horizon_days, freq='D')
-
-            df_future = pd.DataFrame({
-                'Date': future_dates,
-                'Predicted Close': clipped_prices
-            })
-
-            min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
-            yaxis_min = max(min_price * 0.95, 0)
-
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].values.flatten().tolist(), name="Historical"))
-            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
-                                      name="LSTM Forecast", line=dict(dash='dot')))
-            fig2.update_layout(
-                title=f"{symbol} — Combined Forecast View",
-                yaxis=dict(range=[yaxis_min, None]),
-                xaxis_title="Date",
-                yaxis_title="Price (USD)"
-            )
-            st.plotly_chart(fig2)
-
-            st.dataframe(df_future, use_container_width=True)
-            st.download_button("📥 Download LSTM Forecast CSV", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
-
-        except ValueError as ve:
-            st.warning(f"LSTM Skipped: {ve}")
-        except Exception as e:
-            st.error(f"❌ LSTM Error: {e}")
-            st.text(traceback.format_exc())
+            except Exception as e:
+                st.error(f"LSTM Forecast Error: {e}")
+                st.text(traceback.format_exc())
 
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"Unexpected error: {e}")
         st.text(traceback.format_exc())
