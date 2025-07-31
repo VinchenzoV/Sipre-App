@@ -26,21 +26,17 @@ def load_symbols():
 
 symbols_list = load_symbols()
 
-# User types symbol here (free text)
 user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
 
-# Suggest matches from S&P 500 list for convenience
 if user_input:
     filtered_symbols = [s for s in symbols_list if user_input in s]
 else:
     filtered_symbols = symbols_list
 
-# Show dropdown suggestions only if available
 selected_symbol = None
 if filtered_symbols:
     selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols)
-    
-# Let user override by typing anything, even if not in list
+
 symbol = user_input if user_input else selected_symbol
 
 if not symbol:
@@ -128,13 +124,14 @@ if st.button("Get Prediction & Signal"):
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
 
         prophet_df = df.reset_index()
+
         datetime_col = df.index.name if df.index.name else 'Date'
         if datetime_col not in prophet_df.columns:
             datetime_col = prophet_df.columns[0]
 
         prophet_df = pd.DataFrame({
             'ds': prophet_df[datetime_col],
-            'y': prophet_df['Close']
+            'y': prophet_df['Close'].squeeze()  # <-- Important fix here to ensure 1D
         })
 
         st.write("Prepared DataFrame for Prophet:", prophet_df.head())
