@@ -378,11 +378,9 @@ if run_button:
                     Dense(1)
                 ])
                 model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(X, y, epochs=15, batch_size=32, verbose=0)
 
-                with st.spinner("Training LSTM model..."):
-                    model.fit(X, y, epochs=15, batch_size=32, verbose=0)
-
-                               future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
+                future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
                 future_preds = []
                 for _ in range(int(lstm_period)):
                     pred_scaled = model.predict(future_input, verbose=0)[0][0]
@@ -417,4 +415,3 @@ if run_button:
         except Exception as e:
             st.error(f"Error fetching or processing data: {e}")
             st.text(traceback.format_exc())
-
