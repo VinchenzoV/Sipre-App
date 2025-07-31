@@ -1,4 +1,3 @@
-# 📈 Sipre Pro — Predictive Trading Signal Dashboard (Improved Version)
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -14,7 +13,7 @@ import traceback
 
 st.set_page_config(page_title="📈 Sipre Pro — Predictive Trading Signal Dashboard", layout="wide")
 
-st.title(":chart_with_upwards_trend: Sipre Pro — Predictive Trading Signal Dashboard")
+st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
 @st.cache_data
 def load_symbols():
@@ -139,7 +138,7 @@ if run_button:
             st.subheader("News Sentiment (Mocked)")
             st.markdown(fetch_news_sentiment(symbol))
 
-            # Prophet
+            # Prophet Forecast
             st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
             df_reset = df.reset_index()
             prices = df_reset['Close'].clip(lower=1.0).values.flatten()
@@ -164,13 +163,14 @@ if run_button:
                     x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
                     y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
                     fill='toself', fillcolor='rgba(0,100,80,0.2)',
-                    line=dict(color='rgba(255,255,255,0)'), hoverinfo="skip", showlegend=True, name='Confidence'))
+                    line=dict(color='rgba(255,255,255,0)'),
+                    hoverinfo="skip", showlegend=True, name='Confidence Interval'))
                 fig1.update_layout(title=f"{symbol} Prophet Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
                 st.plotly_chart(fig1)
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
 
-            # LSTM
+            # LSTM Forecast
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
                 if df.shape[0] < 50:
@@ -195,11 +195,14 @@ if run_button:
                     future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
                 future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
-                last_close = df['Close'].iloc[-1]
+                last_close = float(df['Close'].iloc[-1])
                 clipped_prices = np.clip(future_prices, last_close * 0.9, None)
 
                 future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
-                df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': clipped_prices})
+                df_future = pd.DataFrame({
+                    'Date': future_dates,
+                    'Predicted Close': clipped_prices
+                })
 
                 fig2 = go.Figure()
                 fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Historical"))
