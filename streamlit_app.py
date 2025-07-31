@@ -103,33 +103,31 @@ def backtest_signals(df):
     """
     df = df.copy()
     df['Position'] = 0
-    # Buy signal
+
     buy_cond = (df['EMA9'].shift(1) < df['EMA21'].shift(1)) & (df['EMA9'] > df['EMA21']) & (df['RSI'] > 30)
-    # Sell signal
     sell_cond = (df['EMA9'].shift(1) > df['EMA21'].shift(1)) & (df['EMA9'] < df['EMA21']) & (df['RSI'] < 70)
 
     df.loc[buy_cond, 'Position'] = 1
     df.loc[sell_cond, 'Position'] = -1
+    df['Position'] = df['Position'].astype(int)
 
     trades = []
     position = 0
     entry_price = 0.0
 
-    for idx, row in df.iterrows():
-        if position == 0 and row['Position'] == 1:
-            # Enter long
+    for idx, pos in zip(df.index, df['Position']):
+        if position == 0 and pos == 1:
             position = 1
-            entry_price = row['Close']
+            entry_price = df.loc[idx, 'Close']
             trades.append({'Entry Date': idx, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
-        elif position == 1 and row['Position'] == -1:
-            # Exit long
-            exit_price = row['Close']
+        elif position == 1 and pos == -1:
+            exit_price = df.loc[idx, 'Close']
             position = 0
             trades[-1]['Exit Date'] = idx
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
-    # Close open position on last day
+    # Close open position at last date if any
     if position == 1:
         exit_price = df['Close'].iloc[-1]
         trades[-1]['Exit Date'] = df.index[-1]
@@ -145,7 +143,6 @@ def backtest_signals(df):
     return trades_df, total_return, win_rate, num_trades
 
 def explain_signal(latest, prev):
-    """Explain the signal in simple terms with a confidence score."""
     ema9_latest = float(latest["EMA9"])
     ema21_latest = float(latest["EMA21"])
     ema9_prev = float(prev["EMA9"])
@@ -157,7 +154,7 @@ def explain_signal(latest, prev):
 
     if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
         explanation.append("EMA9 crossed above EMA21 and RSI > 30")
-        confidence += (rsi_latest - 30) / 70  # scaled confidence based on RSI
+        confidence += (rsi_latest - 30) / 70
         signal = "Buy ✅"
     elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
         explanation.append("EMA9 crossed below EMA21 and RSI < 70")
@@ -167,7 +164,7 @@ def explain_signal(latest, prev):
         signal = "Neutral"
         explanation.append("No clear crossover or RSI in neutral zone")
 
-    confidence = round(min(max(confidence, 0), 1), 2)  # clamp 0-1
+    confidence = round(min(max(confidence, 0), 1), 2)
     return signal, "; ".join(explanation), confidence
 
 
@@ -180,7 +177,7 @@ if run_button:
             # Download data
             for tf in [timeframe, "3mo", "6mo", "1y"]:
                 df = yf.download(symbol, period=tf, interval="1d", progress=False)
-                if df.shape[0] >= 50:  # we need at least 50 for LSTM
+                if df.shape[0] >= 50:
                     st.info(f"Using timeframe: {tf}")
                     break
             else:
@@ -208,7 +205,6 @@ if run_button:
             st.markdown(f"**Explanation:** {explanation}")
             st.markdown(f"**RSI:** {round(latest['RSI'], 2)}")
 
-            # Save to signal log
             if signal != "Neutral":
                 st.session_state.signal_log.append({
                     "symbol": symbol,
@@ -342,7 +338,6 @@ if run_button:
                     line=dict(color='orange', dash='dot')
                 ))
 
-                # Layout with secondary y-axis for MACD histogram
                 fig2.update_layout(
                     title=f"{symbol} Price Chart with Indicators and LSTM Forecast",
                     xaxis_title="Date",
