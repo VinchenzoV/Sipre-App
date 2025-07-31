@@ -1,3 +1,4 @@
+# 📈 Sipre Pro — Predictive Trading Signal Dashboard (Improved Version)
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,7 +14,7 @@ import traceback
 
 st.set_page_config(page_title="📈 Sipre Pro — Predictive Trading Signal Dashboard", layout="wide")
 
-st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
+st.title(":chart_with_upwards_trend: Sipre Pro — Predictive Trading Signal Dashboard")
 
 @st.cache_data
 def load_symbols():
@@ -22,12 +23,10 @@ def load_symbols():
         df = pd.read_csv(url)
         return df['Symbol'].dropna().str.upper().tolist()
     except Exception:
-        # Common fallback symbols incl. crypto
         return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
 
 symbols_list = load_symbols()
 
-# --- Sidebar UI for input ---
 with st.sidebar:
     st.header("Settings")
 
@@ -37,20 +36,16 @@ with st.sidebar:
     symbol = user_input if user_input else selected_symbol
 
     timeframe = st.selectbox("Select timeframe for historical data:", ["1mo", "3mo", "6mo", "1y"], index=2)
-
     alert_email = st.text_input("Enter your email for alerts (optional):")
-
     prophet_period = st.number_input("Number of days to predict (Prophet):", min_value=5, max_value=90, value=30, step=5)
-
     lstm_period = st.number_input("Number of days to predict (LSTM):", min_value=5, max_value=90, value=30, step=5)
-
     run_button = st.button("Run Prediction")
 
 if not symbol:
     st.warning("Please enter or select a valid symbol on the sidebar.")
     st.stop()
 
-# --- Helper functions ---
+# Helper Functions
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -63,29 +58,21 @@ def calculate_rsi(prices, period=14):
 
 def prepare_lstm_data(df, sequence_length=60):
     n = df.shape[0]
-    if n <= sequence_length:
-        sequence_length = max(10, n - 1)
-        if sequence_length < 10:
-            raise ValueError("Still too little data for LSTM.")
-    
-    scaler = MinMaxScaler(feature_range=(0, 1))
+    if n < 20:
+        raise ValueError("Too little data for LSTM.")
+    sequence_length = min(sequence_length, n - 1)
+    scaler = MinMaxScaler()
     scaled_data = scaler.fit_transform(df[['Close']])
     X, y = [], []
     for i in range(sequence_length, len(scaled_data)):
         X.append(scaled_data[i-sequence_length:i])
         y.append(scaled_data[i])
-    
     X = np.array(X)
     y = np.array(y)
-    if X.ndim != 3:
-        raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
     return X, y, scaler
 
 def fetch_news_sentiment(symbol):
     try:
-        url = f"https://finance.yahoo.com/quote/{symbol}"
-        response = requests.get(url)
-        # You can expand this with real sentiment parsing
         return "Sentiment: [Mock sentiment placeholder]"
     except:
         return "Sentiment unavailable"
@@ -96,172 +83,137 @@ def send_email_alert(recipient, signal, symbol):
     except:
         st.error("Failed to send email alert.")
 
+if "signal_log" not in st.session_state:
+    st.session_state.signal_log = []
+
 if run_button:
-    try:
-        # Download data (try timeframe, then longer ones if needed)
-        timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
-        for tf in timeframes_to_try:
-            df = yf.download(symbol, period=tf, interval="1d", progress=False)
-            if df.shape[0] >= 30:
-                st.info(f"Using timeframe: {tf}")
-                break
-        else:
-            st.warning("⚠️ Not enough data available for this symbol.")
-            st.stop()
-
-        df.dropna(inplace=True)
-        if df.empty:
-            st.error("No data found for symbol.")
-            st.stop()
-
-        # Calculate indicators
-        df['EMA9'] = calculate_ema(df['Close'], 9)
-        df['EMA21'] = calculate_ema(df['Close'], 21)
-        df['RSI'] = calculate_rsi(df['Close'])
-        df.dropna(inplace=True)
-
-        if len(df) < 2:
-            st.error("Not enough data after indicator calculation.")
-            st.stop()
-
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        # Fix boolean ambiguity by forcing single values
-        ema9_latest = float(latest["EMA9"])
-        ema21_latest = float(latest["EMA21"])
-        ema9_prev = float(prev["EMA9"])
-        ema21_prev = float(prev["EMA21"])
-        rsi_latest = float(latest["RSI"])
-
-        signal = "Neutral"
-        if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
-            signal = "Buy ✅"
-        elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
-            signal = "Sell ❌"
-
-        st.subheader(f"📌 Signal: {signal}")
-        st.markdown(f"**RSI:** {round(rsi_latest, 2)}")
-
-        if alert_email and signal != "Neutral":
-            send_email_alert(alert_email, signal, symbol)
-
-        st.subheader("📰 News Sentiment (Mocked)")
-        st.markdown(fetch_news_sentiment(symbol))
-
-        # --- Prophet Forecast ---
-        st.subheader(f"📅 Prophet Forecast (Next {int(prophet_period)} Days)")
-
-        df_reset = df.reset_index()
-        close_col = 'Close'
-        if close_col not in df_reset.columns:
-            st.error("No 'Close' column found in data.")
-            st.stop()
-
-        # Prepare prophet data, ensure 1D arrays
-        prices_clipped = df_reset[close_col].clip(lower=1.0).values.flatten()
-        dates = pd.to_datetime(df_reset[df_reset.columns[0]]).values.flatten()
-
-        prophet_df = pd.DataFrame({
-            'ds': dates,
-            'y': np.log(prices_clipped)
-        }).dropna()
-
-        if len(prophet_df) < 30:
-            st.warning("Not enough data for Prophet forecasting.")
-        else:
-            m = Prophet()
-            m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=int(prophet_period))
-            forecast = m.predict(future)
-
-            min_positive = 1e-3
-            forecast['yhat_exp'] = np.exp(forecast['yhat'])
-            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
-            forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
-
-            fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
-            fig1.add_trace(go.Scatter(
-                x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
-                y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
-                fill='toself',
-                fillcolor='rgba(0,100,80,0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                hoverinfo="skip",
-                showlegend=True,
-                name='Confidence Interval'
-            ))
-            fig1.update_layout(title=f"{symbol} Prophet Forecast (Next {int(prophet_period)} Days)",
-                               yaxis_title='Price (USD)',
-                               xaxis_title='Date')
-            st.plotly_chart(fig1)
-
-            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
-            st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
-
-        # --- LSTM Forecast ---
-        st.subheader(f"🤖 LSTM Future Price Prediction (Next {int(lstm_period)} Days)")
-
+    with st.spinner("Running predictions..."):
         try:
-            if df.shape[0] < 50:
-                raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
+            for tf in [timeframe, "3mo", "6mo", "1y"]:
+                df = yf.download(symbol, period=tf, interval="1d", progress=False)
+                if df.shape[0] >= 30:
+                    st.info(f"Using timeframe: {tf}")
+                    break
+            else:
+                st.error("Not enough data for this symbol.")
+                st.stop()
 
-            seq_len = min(60, df.shape[0]-1)
-            X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
-            st.write("LSTM input shapes:", "X:", X.shape, "y:", y.shape)
+            df.dropna(inplace=True)
+            if df.empty:
+                st.error("No data found.")
+                st.stop()
 
-            model = Sequential()
-            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
-            model.add(LSTM(units=50))
-            model.add(Dense(1))
-            model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+            df['EMA9'] = calculate_ema(df['Close'], 9)
+            df['EMA21'] = calculate_ema(df['Close'], 21)
+            df['RSI'] = calculate_rsi(df['Close'])
+            df.dropna(inplace=True)
 
-            future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
-            future_preds = []
-            for _ in range(int(lstm_period)):
-                pred = model.predict(future_input, verbose=0)[0][0]
-                future_preds.append(pred)
-                pred_array = np.array([[[pred]]], dtype=np.float32)
-                future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
-            st.write("Raw predictions:", future_preds)
+            latest, prev = df.iloc[-1], df.iloc[-2]
+            ema9_latest, ema21_latest = float(latest['EMA9']), float(latest['EMA21'])
+            ema9_prev, ema21_prev = float(prev['EMA9']), float(prev['EMA21'])
+            rsi_latest = float(latest['RSI'])
 
-            future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
-            last_close = df['Close'].iloc[-1]
+            signal = "Neutral"
+            if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
+                signal = "Buy ✅"
+            elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
+                signal = "Sell ❌"
 
-            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
+            st.subheader(f"Signal: {signal}")
+            st.markdown(f"**RSI:** {round(rsi_latest, 2)}")
 
-            df_future = pd.DataFrame({
-                'Date': future_dates,
-                'Predicted Close': clipped_prices
-            })
+            if signal != "Neutral":
+                st.session_state.signal_log.append({
+                    "symbol": symbol,
+                    "signal": signal,
+                    "rsi": round(rsi_latest, 2),
+                    "date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+                })
 
-            min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
-            yaxis_min = max(min_price * 0.95, 0)
+            if alert_email and signal != "Neutral":
+                send_email_alert(alert_email, signal, symbol)
 
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].values.flatten().tolist(), name="Historical"))
-            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
-                                      name="LSTM Forecast", line=dict(dash='dot')))
-            fig2.update_layout(
-                title=f"{symbol} — Combined Forecast View",
-                yaxis=dict(range=[yaxis_min, None]),
-                xaxis_title="Date",
-                yaxis_title="Price (USD)"
-            )
-            st.plotly_chart(fig2)
+            if st.checkbox("Show Signal History"):
+                st.dataframe(pd.DataFrame(st.session_state.signal_log))
 
-            st.dataframe(df_future, use_container_width=True)
-            st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
+            st.subheader("News Sentiment (Mocked)")
+            st.markdown(fetch_news_sentiment(symbol))
 
-        except ValueError as ve:
-            st.warning(f"LSTM Skipped: {ve}")
+            # Prophet
+            st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
+            df_reset = df.reset_index()
+            prices = df_reset['Close'].clip(lower=1.0).values.flatten()
+            dates = pd.to_datetime(df_reset[df_reset.columns[0]]).values.flatten()
+
+            prophet_df = pd.DataFrame({'ds': dates, 'y': np.log1p(prices)}).dropna()
+            if len(prophet_df) < 30:
+                st.warning("Not enough data for Prophet.")
+            else:
+                m = Prophet()
+                m.fit(prophet_df)
+                future = m.make_future_dataframe(periods=int(prophet_period))
+                forecast = m.predict(future)
+
+                forecast['yhat_exp'] = np.expm1(forecast['yhat'])
+                forecast['yhat_lower_exp'] = np.expm1(forecast['yhat_lower'].clip(lower=np.log1p(1e-3)))
+                forecast['yhat_upper_exp'] = np.expm1(forecast['yhat_upper'])
+
+                fig1 = go.Figure()
+                fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
+                fig1.add_trace(go.Scatter(
+                    x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
+                    y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
+                    fill='toself', fillcolor='rgba(0,100,80,0.2)',
+                    line=dict(color='rgba(255,255,255,0)'), hoverinfo="skip", showlegend=True, name='Confidence'))
+                fig1.update_layout(title=f"{symbol} Prophet Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
+                st.plotly_chart(fig1)
+                st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+                st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
+
+            # LSTM
+            st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
+            try:
+                if df.shape[0] < 50:
+                    raise ValueError("Not enough data for LSTM (min 50).")
+                seq_len = min(60, df.shape[0]-1)
+                X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
+
+                model = Sequential([
+                    LSTM(50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
+                    LSTM(50),
+                    Dense(1)
+                ])
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+
+                future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
+                future_preds = []
+                for _ in range(int(lstm_period)):
+                    pred_scaled = model.predict(future_input, verbose=0)[0][0]
+                    future_preds.append(pred_scaled)
+                    pred_array = np.array([[[pred_scaled]]])
+                    future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
+
+                future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+                last_close = df['Close'].iloc[-1]
+                clipped_prices = np.clip(future_prices, last_close * 0.9, None)
+
+                future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
+                df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': clipped_prices})
+
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Historical"))
+                fig2.add_trace(go.Scatter(x=df_future['Date'], y=df_future['Predicted Close'], name="LSTM Forecast", line=dict(dash='dot')))
+                fig2.update_layout(title=f"{symbol} Forecast View", xaxis_title="Date", yaxis_title="Price (USD)")
+                st.plotly_chart(fig2)
+
+                st.dataframe(df_future, use_container_width=True)
+                st.download_button("Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
+
+            except Exception as e:
+                st.error(f"LSTM Error: {e}")
+                st.text(traceback.format_exc())
+
         except Exception as e:
-            st.error(f"❌ LSTM Error: {e}")
+            st.error(f"Unexpected Error: {e}")
             st.text(traceback.format_exc())
-
-    except Exception as e:
-        st.error(f"❌ Unexpected Error: {e}")
-        st.text(traceback.format_exc())
