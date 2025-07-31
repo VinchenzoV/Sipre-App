@@ -3,8 +3,8 @@ yfinance
 pandas
 numpy
 matplotlib
-plotly
 prophet
 scikit-learn
 tensorflow
 requests
+plotly
