@@ -54,25 +54,17 @@ def prepare_lstm_data(df, sequence_length=60):
         if sequence_length < 10:
             raise ValueError("Still too little data for LSTM.")
     
-    # Calculate log returns for LSTM target
-    df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
-    df.dropna(inplace=True)
-    
     scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_returns = scaler.fit_transform(df[['LogReturn']])
-    
+    scaled_data = scaler.fit_transform(df[['Close']])
     X, y = [], []
-    for i in range(sequence_length, len(scaled_returns)):
-        X.append(scaled_returns[i-sequence_length:i])  # shape (seq_len, 1)
-        y.append(scaled_returns[i])  # shape (1,)
+    for i in range(sequence_length, len(scaled_data)):
+        X.append(scaled_data[i-sequence_length:i])
+        y.append(scaled_data[i])
     
     X = np.array(X)
     y = np.array(y)
-
-    # Ensure X is 3D: (samples, timesteps, features)
-    if X.ndim == 2:
-        X = np.expand_dims(X, axis=2)
-
+    if X.ndim != 3:
+        raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
     return X, y, scaler
 
 def fetch_news_sentiment(symbol):
@@ -137,17 +129,18 @@ if st.button("Get Prediction & Signal"):
         df_reset = df.reset_index()
 
         close_col = 'Close'
-        if close_col not in df_reset.columns:
-            st.error("No 'Close' column found.")
-            st.stop()
 
-        # Clip close prices so no zero or negative values before log transform
-        min_price_clip = max(1.0, df_reset[close_col].min())
-        prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
+        if isinstance(df_reset.columns, pd.MultiIndex):
+            close_series = df_reset[close_col].iloc[:, 0]
+        else:
+            close_series = df_reset[close_col]
+
+        min_price_clip = max(1.0, close_series.min())
+        prices_clipped = close_series.clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped.values.flatten())  # flatten to 1D
+            'y': np.log(prices_clipped.values.flatten())
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -196,8 +189,6 @@ if st.button("Get Prediction & Signal"):
             seq_len = min(60, df.shape[0]-1)
             X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
-            st.write(f"LSTM input shape: {X.shape}, target shape: {y.shape}")
-
             model = Sequential()
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
             model.add(LSTM(units=50))
@@ -206,32 +197,23 @@ if st.button("Get Prediction & Signal"):
             model.fit(X, y, epochs=10, batch_size=32, verbose=0)
 
             future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
-            future_preds_scaled = []
-
+            future_preds = []
             for _ in range(10):
-                pred_scaled = model.predict(future_input, verbose=0)[0][0]
-                # Clip predicted log return to between -5% and +5%
-                pred_scaled = np.clip(pred_scaled, -0.05, 0.05)
-                future_preds_scaled.append(pred_scaled)
-                pred_array = np.array([[[pred_scaled]]], dtype=np.float32)
+                pred = model.predict(future_input, verbose=0)[0][0]
+                future_preds.append(pred)
+                pred_array = np.array([[[pred]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
+            future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
             last_close = df['Close'].iloc[-1]
-            future_prices = []
-            current_price = last_close
-            for r in future_preds_scaled:
-                next_price = current_price * np.exp(r)
-                # Clip to no less than 90% of last close to avoid unrealistic drops
-                if next_price < last_close * 0.9:
-                    next_price = last_close * 0.9
-                future_prices.append(next_price)
-                current_price = next_price
 
+            # Clip to no less than 90% of last close to avoid unrealistic drops
+            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
             future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
             df_future = pd.DataFrame({
                 'Date': future_dates,
-                'Predicted Close': future_prices
+                'Predicted Close': clipped_prices
             })
 
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
