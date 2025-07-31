@@ -1,5 +1,3 @@
-# streamlit_app.py
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,47 +11,36 @@ import requests
 import plotly.graph_objs as go
 import traceback
 
-st.set_page_config(
-    page_title="Sipre Pro",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'About': "📈 Sipre Pro - Predictive Trading Signal Dashboard\nBuilt with Streamlit, Prophet, LSTM."
-    }
-)
-
+st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-# Sidebar inputs for clean UI
+@st.cache_data
+def load_symbols():
+    try:
+        url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
+        df = pd.read_csv(url)
+        return df['Symbol'].dropna().str.upper().tolist()
+    except Exception:
+        return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
+
+symbols_list = load_symbols()
+
 with st.sidebar:
     st.header("Settings")
-
-    @st.cache_data
-    def load_symbols():
-        try:
-            url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
-            df = pd.read_csv(url)
-            return df['Symbol'].dropna().str.upper().tolist()
-        except Exception:
-            return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
-
-    symbols_list = load_symbols()
-
     user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
     filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
     selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
     symbol = user_input if user_input else selected_symbol
 
-    if not symbol:
-        st.warning("Please enter or select a valid symbol.")
-        st.stop()
-
     timeframe = st.selectbox("Select timeframe:", ["1mo", "3mo", "6mo", "1y"], index=2)
-    alert_email = st.text_input("Email for alerts (optional):")
-    prophet_days = st.number_input("Days to predict (Prophet):", min_value=5, max_value=60, value=15, step=1)
-    lstm_days = st.number_input("Days to predict (LSTM):", min_value=5, max_value=60, value=30, step=1)
+    alert_email = st.text_input("Enter your email for alerts (optional):")
 
-# Functions
+    prophet_period = st.number_input("Number of days to predict (Prophet):", min_value=1, max_value=90, value=30)
+    lstm_period = st.number_input("Number of days to predict (LSTM):", min_value=1, max_value=90, value=30)
+
+if not symbol:
+    st.warning("Please enter or select a valid symbol.")
+    st.stop()
 
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
@@ -71,14 +58,14 @@ def prepare_lstm_data(df, sequence_length=60):
         sequence_length = max(10, n - 1)
         if sequence_length < 10:
             raise ValueError("Still too little data for LSTM.")
-
+    
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df[['Close']])
     X, y = [], []
     for i in range(sequence_length, len(scaled_data)):
         X.append(scaled_data[i-sequence_length:i])
         y.append(scaled_data[i])
-
+    
     X = np.array(X)
     y = np.array(y)
     if X.ndim != 3:
@@ -89,27 +76,23 @@ def fetch_news_sentiment(symbol):
     try:
         url = f"https://finance.yahoo.com/quote/{symbol}"
         response = requests.get(url)
-        # For now, a placeholder:
         return "Sentiment: [Mock sentiment placeholder]"
     except:
         return "Sentiment unavailable"
 
 def send_email_alert(recipient, signal, symbol):
     try:
-        st.success(f"Alert email would be sent to {recipient} (demo only)")
+        st.success(f"Alert email would be sent to {recipient} (demo)")
     except:
         st.error("Failed to send email alert.")
 
-# Main
-
 if st.button("Get Prediction & Signal"):
     try:
-        # Download data, try multiple timeframes until enough data
+        # Download data, try timeframe fallback if needed
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
-        df = pd.DataFrame()
         for tf in timeframes_to_try:
-            df = yf.download(symbol, period=tf, interval="1d", progress=False)
-            if len(df) >= 50:
+            df = yf.download(symbol, period=tf, interval="1d")
+            if len(df) >= 30:
                 st.info(f"Using timeframe: {tf}")
                 break
         else:
@@ -125,12 +108,12 @@ if st.button("Get Prediction & Signal"):
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Convert to float scalars to avoid ambiguity
-        ema9_latest = float(latest["EMA9"])
-        ema21_latest = float(latest["EMA21"])
-        ema9_prev = float(prev["EMA9"])
-        ema21_prev = float(prev["EMA21"])
-        rsi_latest = float(latest["RSI"])
+        # Extract scalar values to avoid ambiguous Series truth error
+        ema9_latest = latest["EMA9"].item() if hasattr(latest["EMA9"], 'item') else float(latest["EMA9"])
+        ema21_latest = latest["EMA21"].item() if hasattr(latest["EMA21"], 'item') else float(latest["EMA21"])
+        ema9_prev = prev["EMA9"].item() if hasattr(prev["EMA9"], 'item') else float(prev["EMA9"])
+        ema21_prev = prev["EMA21"].item() if hasattr(prev["EMA21"], 'item') else float(prev["EMA21"])
+        rsi_latest = latest["RSI"].item() if hasattr(latest["RSI"], 'item') else float(latest["RSI"])
 
         signal = "Neutral"
         if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
@@ -138,36 +121,48 @@ if st.button("Get Prediction & Signal"):
         elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
             signal = "Sell ❌"
 
-        st.markdown(f"## 📌 Signal: {signal}")
+        st.subheader(f"📌 Signal: {signal}")
         st.markdown(f"**RSI:** {round(rsi_latest, 2)}")
 
         if alert_email and signal != "Neutral":
             send_email_alert(alert_email, signal, symbol)
 
-        st.markdown("## 📰 News Sentiment (Mocked)")
+        st.subheader("📰 News Sentiment (Mocked)")
         st.markdown(fetch_news_sentiment(symbol))
 
         # --- Prophet Forecast ---
-        st.markdown(f"## 📅 Prophet Forecast (Next {prophet_days} Days)")
+        st.subheader(f"📅 Prophet Forecast (Next {int(prophet_period)} Days)")
 
         df_reset = df.reset_index()
-        close_col = 'Close'
 
-        # Clip close prices so no zero or negative values before log transform
+        # Flatten MultiIndex columns if present
+        if isinstance(df_reset.columns, pd.MultiIndex):
+            df_reset.columns = [' '.join(map(str, col)).strip() for col in df_reset.columns.values]
+
+        close_col_candidates = [col for col in df_reset.columns if 'close' in col.lower()]
+        if len(close_col_candidates) == 0:
+            st.error("No 'Close' column found.")
+            st.stop()
+        close_col = close_col_candidates[0]
+
+        # Clip close prices at 1.0 to avoid zero or negative values
         min_price_clip = max(1.0, df_reset[close_col].min())
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
-            'ds': pd.to_datetime(df_reset['Date']),
-            'y': np.log(prices_clipped.values.flatten())  # flatten to 1D
+            'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
+            'y': np.log(prices_clipped)  # log-transform for Prophet stability
         }).dropna()
+
+        st.write("Sample of data used for Prophet:")
+        st.dataframe(prophet_df.head())
 
         if prophet_df.shape[0] < 30:
             st.warning("Not enough data for Prophet forecasting.")
         else:
-            m = Prophet(daily_seasonality=True)
+            m = Prophet()
             m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=prophet_days)
+            future = m.make_future_dataframe(periods=int(prophet_period))
             forecast = m.predict(future)
 
             min_positive = 1e-3
@@ -187,41 +182,34 @@ if st.button("Get Prediction & Signal"):
                 showlegend=True,
                 name='Confidence Interval'
             ))
-            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed)",
-                               yaxis_title='Price (USD)', xaxis_title='Date')
-            st.plotly_chart(fig1, use_container_width=True)
+            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next {int(prophet_period)} Days)",
+                               yaxis_title='Price (USD)',
+                               xaxis_title='Date')
+            st.plotly_chart(fig1)
 
-            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(prophet_days),
-                         use_container_width=True)
-            st.download_button("📥 Download Prophet Forecast CSV",
-                               forecast.to_csv(index=False),
-                               file_name=f"{symbol}_prophet_forecast.csv")
+            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+            st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
-        st.markdown(f"## 🤖 LSTM Future Price Prediction (Next {lstm_days} Days)")
+        st.subheader(f"🤖 LSTM Future Price Prediction (Next {int(lstm_period)} Days)")
 
         try:
-            if df.shape[0] < 50:
+            if df.shape[0] < 50:  # minimal data for LSTM
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
-            seq_len = min(60, df.shape[0] - 1)
+            seq_len = min(60, df.shape[0]-1)
             X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
-            # Reshape X to (samples, timesteps, features)
-            X = X.reshape((X.shape[0], X.shape[1], 1))
-
-            model = Sequential([
-                LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)),
-                LSTM(units=50),
-                Dense(1)
-            ])
+            model = Sequential()
+            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
+            model.add(LSTM(units=50))
+            model.add(Dense(1))
             model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, epochs=15, batch_size=32, verbose=0)
+            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
 
-            future_input = X[-1].reshape(1, X.shape[1], 1)
+            future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
             future_preds = []
-
-            for _ in range(lstm_days):
+            for _ in range(int(lstm_period)):
                 pred = model.predict(future_input, verbose=0)[0][0]
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
@@ -230,32 +218,32 @@ if st.button("Get Prediction & Signal"):
             future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
             last_close = df['Close'].iloc[-1]
 
-            # Clip to avoid unrealistic drops (>90% of last close)
+            # Clip to no less than 90% of last close to avoid unrealistic drops
             clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=lstm_days, freq='B')
+            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
 
-            df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': clipped_prices})
+            df_future = pd.DataFrame({
+                'Date': future_dates,
+                'Predicted Close': clipped_prices
+            })
 
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
             yaxis_min = max(min_price * 0.95, 0)
 
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Historical"))
-            fig2.add_trace(go.Scatter(x=df_future['Date'], y=df_future['Predicted Close'],
+            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].values.flatten().tolist(), name="Historical"))
+            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
                                       name="LSTM Forecast", line=dict(dash='dot')))
             fig2.update_layout(
-                title=f"{symbol} — Combined Forecast",
+                title=f"{symbol} — Combined Forecast View",
                 yaxis=dict(range=[yaxis_min, None]),
                 xaxis_title="Date",
-                yaxis_title="Price (USD)",
-                hovermode='x unified'
+                yaxis_title="Price (USD)"
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2)
 
             st.dataframe(df_future, use_container_width=True)
-            st.download_button("📥 Download LSTM Forecast CSV",
-                               df_future.to_csv(index=False),
-                               file_name=f"{symbol}_lstm_forecast.csv")
+            st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
         except ValueError as ve:
             st.warning(f"LSTM Skipped: {ve}")
