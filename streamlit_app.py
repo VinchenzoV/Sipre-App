@@ -113,7 +113,7 @@ if st.button("Get Prediction & Signal"):
             st.error("No 'Close' column found.")
             st.stop()
 
-        # FIXED: Safely handle min value to avoid Series ambiguity
+        # Safely get minimum close price for clipping to avoid zeros or negatives
         min_val = df_reset[close_col].min()
         if hasattr(min_val, 'values'):
             min_val = min_val.values.min()
@@ -123,7 +123,7 @@ if st.button("Get Prediction & Signal"):
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped)
+            'y': np.log(prices_clipped.values.flatten())  # <-- FIX: flatten to 1D
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -171,7 +171,7 @@ if st.button("Get Prediction & Signal"):
 
             seq_len = min(60, df.shape[0] - 1)
 
-            # Use log returns for LSTM stability
+            # Use log returns for stability
             df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
             df.dropna(inplace=True)
 
@@ -200,7 +200,7 @@ if st.button("Get Prediction & Signal"):
 
             for _ in range(10):
                 pred_scaled = model.predict(future_input, verbose=0)[0][0]
-                pred_scaled = np.clip(pred_scaled, 0, 1)  # Clip strictly to [0,1]
+                pred_scaled = np.clip(pred_scaled, 0, 1)  # Clip predictions strictly to [0,1]
                 future_preds_scaled.append(pred_scaled)
                 pred_array = np.array([[[pred_scaled]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
@@ -225,9 +225,6 @@ if st.button("Get Prediction & Signal"):
                 'Date': future_dates,
                 'Predicted Close': future_prices
             })
-
-            st.write("Debug: Predicted log returns (unscaled):", future_preds)
-            st.write("Debug: Predicted future prices:", future_prices)
 
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
             yaxis_min = max(min_price * 0.95, 0)
