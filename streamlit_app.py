@@ -14,7 +14,7 @@ import traceback
 st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-@st.cache_data(ttl=3600)
+@st.cache_data
 def load_symbols():
     try:
         url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
@@ -83,6 +83,7 @@ def send_email_alert(recipient, signal, symbol):
 
 if st.button("Get Prediction & Signal"):
     try:
+        # Download data, try timeframes from selected to longer if needed
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
         for tf in timeframes_to_try:
             df = yf.download(symbol, period=tf, interval="1d")
@@ -94,6 +95,7 @@ if st.button("Get Prediction & Signal"):
             st.stop()
 
         df.dropna(inplace=True)
+        # Calculate indicators
         df['EMA9'] = calculate_ema(df['Close'], 9)
         df['EMA21'] = calculate_ema(df['Close'], 21)
         df['RSI'] = calculate_rsi(df['Close'])
@@ -144,13 +146,13 @@ if st.button("Get Prediction & Signal"):
                 st.error("No 'Close' column found.")
                 st.stop()
 
-        epsilon = 1e-3
-        min_price_clip = max(10.0, df_reset[close_col].min())  # Adjust 10.0 if symbol trades lower
+        # Clip close prices so no zero or negative values before log transform
+        min_price_clip = max(1.0, df_reset[close_col].min())
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped + epsilon)  # epsilon added before log transform
+            'y': np.log(prices_clipped)
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -164,22 +166,17 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            # Exponentiate predictions and clip to avoid zeros
+            # Clip yhat_lower to avoid exp of large negative number (close to 0)
+            min_positive = 1e-3
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
-            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'])
+            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            forecast['yhat_exp'] = forecast['yhat_exp'].clip(lower=epsilon)
-            forecast['yhat_lower_exp'] = forecast['yhat_lower_exp'].clip(lower=epsilon)
-            forecast['yhat_upper_exp'] = forecast['yhat_upper_exp'].clip(lower=epsilon)
-
-            # Optional debug: alert if forecast values are suspiciously low
-            low_forecast = forecast[forecast['yhat_exp'] < 1.0]
-            if not low_forecast.empty:
-                st.warning("Warning: Some forecasted prices below 1.0 detected and clipped.")
+            # Smooth the forecast curve with rolling median to avoid sudden drops
+            forecast['yhat_exp_smooth'] = forecast['yhat_exp'].rolling(window=3, center=True, min_periods=1).median()
 
             fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
+            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp_smooth'], mode='lines', name='Forecast'))
             fig1.add_trace(go.Scatter(
                 x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
                 y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
@@ -195,7 +192,7 @@ if st.button("Get Prediction & Signal"):
                                xaxis_title='Date')
             st.plotly_chart(fig1)
 
-            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+            st.dataframe(forecast[['ds', 'yhat_exp_smooth', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
@@ -205,7 +202,7 @@ if st.button("Get Prediction & Signal"):
             if df.shape[0] < 50:
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
-            seq_len = min(60, df.shape[0]-1)
+            seq_len = min(60, df.shape[0] - 1)
             X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
             model = Sequential()
@@ -219,6 +216,8 @@ if st.button("Get Prediction & Signal"):
             future_preds = []
             for _ in range(10):
                 pred = model.predict(future_input, verbose=0)[0][0]
+                # Clip prediction to [0,1] since scaler expects this range
+                pred = np.clip(pred, 0, 1)
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
