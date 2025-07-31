@@ -117,23 +117,30 @@ if symbol:
 
             st.subheader("📅 Prophet Forecast (Next 30 Days)")
 
-            # Debug info for Prophet dataframe creation:
+            # Prepare dataframe for Prophet
             prophet_df = df.reset_index()
+
             st.write("Columns after reset_index:", prophet_df.columns.tolist())
             st.write("Sample data:", prophet_df.head())
 
-            # Detect index name dynamically for datetime column
             datetime_col = df.index.name if df.index.name else 'Date'
             if datetime_col not in prophet_df.columns:
-                # fallback to first column (usually Date after reset_index)
                 datetime_col = prophet_df.columns[0]
 
             prophet_df = prophet_df[[datetime_col, 'Close']].rename(columns={datetime_col: 'ds', 'Close': 'y'})
 
             st.write("Prepared DataFrame for Prophet:", prophet_df.head())
+            st.write(f"Type of prophet_df['y']: {type(prophet_df['y'])}")
+
+            # Defensive conversion if needed
+            if not isinstance(prophet_df['y'], (pd.Series, np.ndarray, list)):
+                st.warning(f"Converting 'y' column to Series from {type(prophet_df['y'])}")
+                prophet_df['y'] = pd.Series(prophet_df['y'].values.flatten())
 
             prophet_df['y'] = pd.to_numeric(prophet_df['y'], errors='coerce')
             prophet_df = prophet_df.dropna(subset=['y'])
+
+            st.write("Cleaned data for Prophet:", prophet_df.head())
 
             m = Prophet()
             m.fit(prophet_df)
