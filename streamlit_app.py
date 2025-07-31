@@ -36,7 +36,8 @@ if not symbol:
 
 timeframe = st.selectbox("Select timeframe:", ["1mo", "3mo", "6mo", "1y"])
 alert_email = st.text_input("Enter your email for alerts (optional):")
-future_periods = st.number_input("Days to predict into the future (Prophet & LSTM)", min_value=1, max_value=90, value=15, step=1)
+prophet_days = st.number_input("Number of days to predict (Prophet):", min_value=5, max_value=90, value=15, step=1)
+lstm_days = st.number_input("Number of days to predict (LSTM):", min_value=5, max_value=90, value=30, step=1)
 
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
@@ -72,7 +73,6 @@ def fetch_news_sentiment(symbol):
     try:
         url = f"https://finance.yahoo.com/quote/{symbol}"
         response = requests.get(url)
-        # Here you could parse the page for sentiment or use a real API
         return "Sentiment: [Mock sentiment placeholder]"
     except:
         return "Sentiment unavailable"
@@ -86,15 +86,12 @@ def send_email_alert(recipient, signal, symbol):
 if st.button("Get Prediction & Signal"):
     try:
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
-        df = None
         for tf in timeframes_to_try:
-            temp_df = yf.download(symbol, period=tf, interval="1d")
-            if len(temp_df) >= 30:
-                df = temp_df
+            df = yf.download(symbol, period=tf, interval="1d")
+            if len(df) >= 30:
                 st.info(f"Using timeframe: {tf}")
                 break
-
-        if df is None or df.empty:
+        else:
             st.warning("⚠️ Not enough data available for this symbol.")
             st.stop()
 
@@ -107,12 +104,12 @@ if st.button("Get Prediction & Signal"):
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Extract scalars to avoid ambiguity errors
-        ema9_latest = float(latest["EMA9"])
-        ema21_latest = float(latest["EMA21"])
-        ema9_prev = float(prev["EMA9"])
-        ema21_prev = float(prev["EMA21"])
-        rsi_latest = float(latest["RSI"])
+        # Fix for ambiguous Series truth value:
+        ema9_prev = prev['EMA9'].item() if np.ndim(prev['EMA9']) == 0 else prev['EMA9'].values[0]
+        ema21_prev = prev['EMA21'].item() if np.ndim(prev['EMA21']) == 0 else prev['EMA21'].values[0]
+        ema9_latest = latest['EMA9'].item() if np.ndim(latest['EMA9']) == 0 else latest['EMA9'].values[0]
+        ema21_latest = latest['EMA21'].item() if np.ndim(latest['EMA21']) == 0 else latest['EMA21'].values[0]
+        rsi_latest = latest['RSI'].item() if np.ndim(latest['RSI']) == 0 else latest['RSI'].values[0]
 
         signal = "Neutral"
         if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
@@ -130,33 +127,20 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         # --- Prophet Forecast ---
-        st.subheader(f"📅 Prophet Forecast (Next {future_periods} Days)")
+        st.subheader(f"📅 Prophet Forecast (Next {prophet_days} Days)")
 
         df_reset = df.reset_index()
 
-        # Handle MultiIndex columns if any
-        if isinstance(df_reset.columns, pd.MultiIndex):
-            close_col = None
-            for col in df_reset.columns:
-                if col[0].lower() == 'close':
-                    close_col = col
-                    break
-            if close_col is None:
-                st.error("No 'Close' column found.")
-                st.stop()
-        else:
-            close_col = 'Close'
-            if close_col not in df_reset.columns:
-                st.error("No 'Close' column found.")
-                st.stop()
+        close_col = 'Close'
+        if close_col not in df_reset.columns:
+            st.error("No 'Close' column found.")
+            st.stop()
 
-        prices = df_reset[close_col].values.flatten()
-        dates = pd.to_datetime(df_reset[df_reset.columns[0]])
+        prices_clipped = df_reset[close_col].clip(lower=1.0)
 
-        # Ensure prices is 1D array for Prophet
         prophet_df = pd.DataFrame({
-            'ds': dates,
-            'y': np.log(np.clip(prices, a_min=1, a_max=None))  # log-transform and clip at 1 to avoid log(0)
+            'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
+            'y': np.log(prices_clipped.values.flatten())  # flatten to 1D array
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -167,16 +151,14 @@ if st.button("Get Prediction & Signal"):
         else:
             m = Prophet()
             m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=future_periods)
+            future = m.make_future_dataframe(periods=prophet_days)
             forecast = m.predict(future)
 
-            # exponentiate forecast and confidence intervals carefully
             min_positive = 1e-3
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
             forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            # Plot with confidence intervals
             fig1 = go.Figure()
             fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
             fig1.add_trace(go.Scatter(
@@ -189,22 +171,22 @@ if st.button("Get Prediction & Signal"):
                 showlegend=True,
                 name='Confidence Interval'
             ))
-            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next {future_periods} Days)",
+            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next {prophet_days} Days)",
                                yaxis_title='Price (USD)',
                                xaxis_title='Date')
             st.plotly_chart(fig1)
 
-            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(prophet_days), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
-        st.subheader(f"🤖 LSTM Future Price Prediction (Next {future_periods} Days)")
+        st.subheader(f"🤖 LSTM Future Price Prediction (Next {lstm_days} Days)")
 
         try:
             if df.shape[0] < 50:
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
-            seq_len = min(60, df.shape[0]-1)
+            seq_len = min(60, df.shape[0] - 1)
             X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
             model = Sequential()
@@ -216,7 +198,7 @@ if st.button("Get Prediction & Signal"):
 
             future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
             future_preds = []
-            for _ in range(future_periods):
+            for _ in range(lstm_days):
                 pred = model.predict(future_input, verbose=0)[0][0]
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
@@ -225,9 +207,8 @@ if st.button("Get Prediction & Signal"):
             future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
             last_close = df['Close'].iloc[-1]
 
-            # Clip to no less than 90% of last close to avoid unrealistic drops
             clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=future_periods, freq='D')
+            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=lstm_days, freq='D')
 
             df_future = pd.DataFrame({
                 'Date': future_dates,
