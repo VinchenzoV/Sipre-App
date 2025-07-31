@@ -127,15 +127,14 @@ if symbol:
             if datetime_col not in prophet_df.columns:
                 datetime_col = prophet_df.columns[0]
 
-            prophet_df = prophet_df[[datetime_col, 'Close']].rename(columns={datetime_col: 'ds', 'Close': 'y'})
+            prophet_df = prophet_df[[datetime_col, 'Close']].copy()
+            prophet_df.rename(columns={datetime_col: 'ds', 'Close': 'y'}, inplace=True)
 
             st.write("Prepared DataFrame for Prophet:", prophet_df.head())
             st.write(f"Type of prophet_df['y']: {type(prophet_df['y'])}")
 
-            # Defensive conversion if needed
-            if not isinstance(prophet_df['y'], (pd.Series, np.ndarray, list)):
-                st.warning(f"Converting 'y' column to Series from {type(prophet_df['y'])}")
-                prophet_df['y'] = pd.Series(prophet_df['y'].values.flatten())
+            # Fix: ensure 'y' is a Series
+            prophet_df['y'] = prophet_df['y'].squeeze()
 
             prophet_df['y'] = pd.to_numeric(prophet_df['y'], errors='coerce')
             prophet_df = prophet_df.dropna(subset=['y'])
