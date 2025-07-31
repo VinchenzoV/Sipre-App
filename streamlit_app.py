@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from prophet import Prophet
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
@@ -49,8 +48,9 @@ def calculate_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def prepare_lstm_data(df, sequence_length=60):
-    if df.shape[0] <= sequence_length:
-        sequence_length = max(10, df.shape[0] - 1)
+    n = df.shape[0]
+    if n <= sequence_length:
+        sequence_length = max(10, n - 1)
         if sequence_length < 10:
             raise ValueError("Still too little data for LSTM.")
     
@@ -123,30 +123,24 @@ if st.button("Get Prediction & Signal"):
         st.subheader("📰 News Sentiment (Mocked)")
         st.markdown(fetch_news_sentiment(symbol))
 
-        # --- Prophet Forecast Section ---
+        # --- Prophet Forecast ---
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
-
         df_reset = df.reset_index()
-        st.write("Debug: df_reset columns:", df_reset.columns.tolist())
 
+        # Handle possible MultiIndex in columns
         if isinstance(df_reset.columns, pd.MultiIndex):
             close_col = None
             for col in df_reset.columns:
-                if col[0].lower() == 'close' and col[1].upper() == symbol.upper():
+                if col[0].lower() == 'close':
                     close_col = col
                     break
             if close_col is None:
-                for col in df_reset.columns:
-                    if col[0].lower() == 'close':
-                        close_col = col
-                        break
-            if close_col is None:
-                st.error("No 'Close' column found in data!")
+                st.error("No 'Close' column found.")
                 st.stop()
         else:
             close_col = 'Close'
             if close_col not in df_reset.columns:
-                st.error("No 'Close' column found in data!")
+                st.error("No 'Close' column found.")
                 st.stop()
 
         prophet_df = pd.DataFrame({
@@ -157,6 +151,7 @@ if st.button("Get Prediction & Signal"):
         if prophet_df.shape[0] < 30:
             st.warning("Not enough data for Prophet forecasting.")
         else:
+            # Log-transform price for smoother, more realistic forecast
             epsilon = 1e-3
             prophet_df['y'] = np.log(prophet_df['y'].clip(lower=epsilon))
 
@@ -165,6 +160,7 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=30)
             forecast = m.predict(future)
 
+            # Inverse transform predictions
             forecast['yhat'] = np.exp(forecast['yhat'])
             forecast['yhat_lower'] = np.exp(forecast['yhat_lower'])
             forecast['yhat_upper'] = np.exp(forecast['yhat_upper'])
@@ -177,11 +173,15 @@ if st.button("Get Prediction & Signal"):
             st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
-        # --- LSTM Forecast Section ---
+        # --- LSTM Forecast ---
         st.subheader("🤖 LSTM Future Price Prediction")
 
         try:
+            if df.shape[0] < 70:  # Require enough data to train sequence length
+                raise ValueError("Not enough data points for LSTM prediction (need at least ~70).")
+
             X, y, scaler = prepare_lstm_data(df)
+
             model = Sequential()
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
             model.add(LSTM(units=50))
@@ -200,14 +200,17 @@ if st.button("Get Prediction & Signal"):
             future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
             future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
+            # Clip negative or unrealistically low predictions to 90% of last actual close price
+            last_close = df['Close'].iloc[-1]
+            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
+
             df_future = pd.DataFrame({
                 'Date': pd.to_datetime(future_dates),
-                'Predicted Close': future_prices
+                'Predicted Close': clipped_prices
             })
 
-            # Define y-axis min with 5% buffer below minimum actual or predicted price
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
-            yaxis_min = max(min_price * 0.95, 0)  # never below 0
+            yaxis_min = max(min_price * 0.95, 0)
 
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].values.flatten().tolist(), name="Historical"))
