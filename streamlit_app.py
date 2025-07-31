@@ -144,13 +144,13 @@ if st.button("Get Prediction & Signal"):
                 st.error("No 'Close' column found.")
                 st.stop()
 
-        # Clip close prices to avoid zeros or negatives before log transform
-        min_price_clip = max(1.0, df_reset[close_col].min())
+        epsilon = 1e-3
+        min_price_clip = max(10.0, df_reset[close_col].min())  # Adjust 10.0 if symbol trades lower
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped)
+            'y': np.log(prices_clipped + epsilon)  # epsilon added before log transform
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -164,10 +164,19 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            min_positive = 1e-3
+            # Exponentiate predictions and clip to avoid zeros
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
-            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
+            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'])
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
+
+            forecast['yhat_exp'] = forecast['yhat_exp'].clip(lower=epsilon)
+            forecast['yhat_lower_exp'] = forecast['yhat_lower_exp'].clip(lower=epsilon)
+            forecast['yhat_upper_exp'] = forecast['yhat_upper_exp'].clip(lower=epsilon)
+
+            # Optional debug: alert if forecast values are suspiciously low
+            low_forecast = forecast[forecast['yhat_exp'] < 1.0]
+            if not low_forecast.empty:
+                st.warning("Warning: Some forecasted prices below 1.0 detected and clipped.")
 
             fig1 = go.Figure()
             fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
