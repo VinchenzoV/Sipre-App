@@ -157,13 +157,24 @@ if st.button("Get Prediction & Signal"):
         if prophet_df.shape[0] < 30:
             st.warning("Not enough data for Prophet forecasting.")
         else:
+            # Log-transform prices (add small offset if any zero prices)
+            epsilon = 1e-3
+            prophet_df['y'] = np.log(prophet_df['y'].clip(lower=epsilon))
+
             m = Prophet()
             m.fit(prophet_df)
             future = m.make_future_dataframe(periods=30)
             forecast = m.predict(future)
 
-            # Prophet chart with matplotlib
+            # Inverse transform predictions back to price scale
+            forecast['yhat'] = np.exp(forecast['yhat'])
+            forecast['yhat_lower'] = np.exp(forecast['yhat_lower'])
+            forecast['yhat_upper'] = np.exp(forecast['yhat_upper'])
+
+            # Plot forecast with matplotlib
             fig1 = m.plot(forecast)
+            ax = fig1.gca()
+            ax.set_ylabel("Price (USD)")
             st.pyplot(fig1.figure)
 
             # Show forecast table and download option
