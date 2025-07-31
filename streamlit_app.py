@@ -47,6 +47,34 @@ def calculate_rsi(prices, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+def prepare_lstm_data(df, sequence_length=60):
+    n = df.shape[0]
+    if n <= sequence_length:
+        sequence_length = max(10, n - 1)
+        if sequence_length < 10:
+            raise ValueError("Still too little data for LSTM.")
+    
+    # Calculate log returns for LSTM target
+    df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
+    df.dropna(inplace=True)
+    
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_returns = scaler.fit_transform(df[['LogReturn']])
+    
+    X, y = [], []
+    for i in range(sequence_length, len(scaled_returns)):
+        X.append(scaled_returns[i-sequence_length:i])  # shape (seq_len, 1)
+        y.append(scaled_returns[i])  # shape (1,)
+    
+    X = np.array(X)
+    y = np.array(y)
+
+    # Ensure X is 3D: (samples, timesteps, features)
+    if X.ndim == 2:
+        X = np.expand_dims(X, axis=2)
+
+    return X, y, scaler
+
 def fetch_news_sentiment(symbol):
     try:
         url = f"https://finance.yahoo.com/quote/{symbol}"
@@ -113,17 +141,13 @@ if st.button("Get Prediction & Signal"):
             st.error("No 'Close' column found.")
             st.stop()
 
-        # Safely get minimum close price for clipping to avoid zeros or negatives
-        min_val = df_reset[close_col].min()
-        if hasattr(min_val, 'values'):
-            min_val = min_val.values.min()
-        min_price_clip = max(1.0, float(min_val))
-
+        # Clip close prices so no zero or negative values before log transform
+        min_price_clip = max(1.0, df_reset[close_col].min())
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped.values.flatten())  # <-- FIX: flatten to 1D
+            'y': np.log(prices_clipped.values.flatten())  # flatten to 1D
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -169,51 +193,35 @@ if st.button("Get Prediction & Signal"):
             if df.shape[0] < 50:
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
-            seq_len = min(60, df.shape[0] - 1)
+            seq_len = min(60, df.shape[0]-1)
+            X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
-            # Use log returns for stability
-            df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
-            df.dropna(inplace=True)
-
-            scaler = MinMaxScaler(feature_range=(0, 1))
-            scaled_returns = scaler.fit_transform(df[['LogReturn']])
-
-            X, y = [], []
-            for i in range(seq_len, len(scaled_returns)):
-                X.append(scaled_returns[i - seq_len:i])
-                y.append(scaled_returns[i])
-
-            X = np.array(X)
-            y = np.array(y)
+            st.write(f"LSTM input shape: {X.shape}, target shape: {y.shape}")
 
             model = Sequential()
-            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
+            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
             model.add(LSTM(units=50))
             model.add(Dense(1))
             model.compile(optimizer='adam', loss='mean_squared_error')
+            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
 
-            early_stop = tf.keras.callbacks.EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
-            model.fit(X, y, epochs=50, batch_size=32, verbose=0, callbacks=[early_stop])
-
-            future_input = X[-1].reshape(1, X.shape[1], 1)
+            future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
             future_preds_scaled = []
 
             for _ in range(10):
                 pred_scaled = model.predict(future_input, verbose=0)[0][0]
-                pred_scaled = np.clip(pred_scaled, 0, 1)  # Clip predictions strictly to [0,1]
+                # Clip predicted log return to between -5% and +5%
+                pred_scaled = np.clip(pred_scaled, -0.05, 0.05)
                 future_preds_scaled.append(pred_scaled)
                 pred_array = np.array([[[pred_scaled]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-            future_preds = scaler.inverse_transform(np.array(future_preds_scaled).reshape(-1, 1)).flatten()
-
             last_close = df['Close'].iloc[-1]
             future_prices = []
             current_price = last_close
-
-            for r in future_preds:
+            for r in future_preds_scaled:
                 next_price = current_price * np.exp(r)
-                # Prevent unrealistic drops below 90% of last close
+                # Clip to no less than 90% of last close to avoid unrealistic drops
                 if next_price < last_close * 0.9:
                     next_price = last_close * 0.9
                 future_prices.append(next_price)
@@ -244,6 +252,8 @@ if st.button("Get Prediction & Signal"):
             st.dataframe(df_future, use_container_width=True)
             st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
+        except ValueError as ve:
+            st.warning(f"LSTM Skipped: {ve}")
         except Exception as e:
             st.error(f"❌ LSTM Error: {e}")
             st.text(traceback.format_exc())
