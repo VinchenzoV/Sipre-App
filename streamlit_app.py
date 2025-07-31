@@ -7,30 +7,34 @@ from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-import requests
 import plotly.graph_objs as go
 import traceback
 
 st.set_page_config(page_title="📈 Sipre Pro — Predictive Trading Signal Dashboard", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-@st.cache_data
+# --- Caching symbol list ---
+@st.cache_data(ttl=86400)
 def load_symbols():
     try:
         url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
         df = pd.read_csv(url)
         return df['Symbol'].dropna().str.upper().tolist()
     except Exception:
+        # fallback list
         return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
 
 symbols_list = load_symbols()
 
+# --- Improved symbol input / selection ---
 with st.sidebar:
     st.header("Settings")
     user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
-    filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
-    selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
-    symbol = user_input if user_input else selected_symbol
+    if user_input and user_input in symbols_list:
+        symbol = user_input
+    else:
+        filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
+        symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
 
     timeframe = st.selectbox("Select timeframe for historical data:", ["1mo", "3mo", "6mo", "1y"], index=2)
     alert_email = st.text_input("Enter your email for alerts (optional):")
@@ -42,17 +46,26 @@ if not symbol:
     st.warning("Please enter or select a valid symbol on the sidebar.")
     st.stop()
 
-# === Helper functions ===
+# --- Cache yfinance data download ---
+@st.cache_data(ttl=3600)
+def get_data(symbol, period):
+    df = yf.download(symbol, period=period, interval="1d", progress=False)
+    return df
+
+# --- Technical indicators ---
 
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period-1, adjust=False).mean()
+    avg_loss = loss.ewm(com=period-1, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def calculate_macd(df, fast=12, slow=26, signal=9):
     ema_fast = calculate_ema(df['Close'], fast)
@@ -85,33 +98,22 @@ def prepare_lstm_data(df, sequence_length=60):
     return X, y, scaler
 
 def fetch_news_sentiment(symbol):
-    try:
-        return "Sentiment: [Mock sentiment placeholder]"
-    except:
-        return "Sentiment unavailable"
+    # Placeholder for future real sentiment API integration
+    return "Sentiment: [Mock sentiment placeholder]"
 
 def send_email_alert(recipient, signal, symbol):
-    try:
-        st.success(f"Alert email would be sent to {recipient} (demo only)")
-    except:
-        st.error("Failed to send email alert.")
+    # Placeholder for future real email alert integration
+    st.success(f"Alert email would be sent to {recipient} (demo only)")
 
 def generate_signals(df):
     df = df.copy()
     df['Signal'] = 0
-
-    # Signal = 1 when EMA9 > EMA21 and RSI > 30
     df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
-    # Signal = -1 when EMA9 < EMA21 and RSI < 70
     df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
-
-    # Forward fill Position based on Signal changes
     df['Position'] = df['Signal'].replace(to_replace=0, method='ffill').fillna(0).astype(int)
-
     return df
 
-
-def backtest_signals(df):
+def backtest_signals(df, slippage=0.001, fee=0.001):
     df = df.copy()
     df['Position'] = 0
 
@@ -127,19 +129,23 @@ def backtest_signals(df):
     entry_price = 0.0
 
     for idx, pos in zip(df.index, df['Position']):
+        price = df.loc[idx, 'Close']
         if position == 0 and pos == 1:
+            # Buy with slippage and fee applied
             position = 1
-            entry_price = df.loc[idx, 'Close']
+            entry_price = price * (1 + slippage + fee)
             trades.append({'Entry Date': idx, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
         elif position == 1 and pos == -1:
-            exit_price = df.loc[idx, 'Close']
+            # Sell with slippage and fee applied
+            exit_price = price * (1 - slippage - fee)
             position = 0
             trades[-1]['Exit Date'] = idx
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
+    # If position still open at the end, close at last price
     if position == 1:
-        exit_price = df['Close'].iloc[-1]
+        exit_price = df['Close'].iloc[-1] * (1 - slippage - fee)
         trades[-1]['Exit Date'] = df.index[-1]
         trades[-1]['Exit Price'] = exit_price
         trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
@@ -152,12 +158,16 @@ def backtest_signals(df):
         total_return = trades_df_clean['Return %'].sum() if not trades_df_clean.empty else 0
         win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
         num_trades = len(trades_df_clean)
+
+        # Add cumulative returns for equity curve
+        trades_df_clean['Cumulative Return'] = (1 + trades_df_clean['Return %'] / 100).cumprod() - 1
     else:
         total_return = 0
         win_rate = 0
         num_trades = 0
+        trades_df_clean = pd.DataFrame()
 
-    return trades_df, total_return, win_rate, num_trades
+    return trades_df, trades_df_clean, total_return, win_rate, num_trades
 
 def explain_signal(latest, prev):
     ema9_latest = float(latest["EMA9"])
@@ -173,10 +183,7 @@ def explain_signal(latest, prev):
     ema_diff_prev = ema9_prev - ema21_prev
     ema_diff_latest = ema9_latest - ema21_latest
 
-    # Strength of EMA difference
     ema_strength = abs(ema_diff_latest)
-
-    # Normalize RSI distances for confidence scaling
     rsi_buy_conf = max(0, min(1, (rsi_latest - 30) / 40))   # RSI 30-70 scaled 0-1
     rsi_sell_conf = max(0, min(1, (70 - rsi_latest) / 40))  # RSI 70-30 scaled 0-1
 
@@ -200,9 +207,9 @@ if "signal_log" not in st.session_state:
 if run_button:
     with st.spinner("Running predictions and analysis..."):
         try:
-            # Download data
+            # Download data, pick timeframe with at least 50 rows
             for tf in [timeframe, "3mo", "6mo", "1y"]:
-                df = yf.download(symbol, period=tf, interval="1d", progress=False)
+                df = get_data(symbol, tf)
                 if df.shape[0] >= 50:
                     st.info(f"Using timeframe: {tf}")
                     break
@@ -255,12 +262,23 @@ if run_button:
 
             # Backtesting
             st.subheader("📊 Backtesting Performance")
-            trades_df, total_return, win_rate, num_trades = backtest_signals(df)
+            trades_df, trades_clean, total_return, win_rate, num_trades = backtest_signals(df)
             st.markdown(f"**Number of trades:** {num_trades}")
             st.markdown(f"**Total return:** {total_return:.2f}%")
             st.markdown(f"**Win rate:** {win_rate:.2f}%")
             if not trades_df.empty:
                 st.dataframe(trades_df)
+
+                # Plot cumulative returns equity curve
+                fig_bt = go.Figure()
+                fig_bt.add_trace(go.Scatter(
+                    x=trades_clean['Exit Date'],
+                    y=trades_clean['Cumulative Return'] * 100,
+                    mode='lines+markers',
+                    name='Equity Curve (%)'
+                ))
+                fig_bt.update_layout(title=f"{symbol} Backtest Equity Curve", yaxis_title="Cumulative Return (%)", xaxis_title="Date")
+                st.plotly_chart(fig_bt)
 
             # Prophet forecast
             st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
@@ -286,9 +304,13 @@ if run_button:
                 fig1.add_trace(go.Scatter(
                     x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
                     y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
-                    fill='toself', fillcolor='rgba(0,100,80,0.2)',
+                    fill='toself',
+                    fillcolor='rgba(0,100,80,0.2)',
                     line=dict(color='rgba(255,255,255,0)'),
-                    hoverinfo="skip", showlegend=True, name='Confidence Interval'))
+                    hoverinfo="skip",
+                    showlegend=True,
+                    name='Confidence Interval'
+                ))
                 fig1.update_layout(title=f"{symbol} Prophet Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
                 st.plotly_chart(fig1)
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
@@ -297,7 +319,7 @@ if run_button:
             # LSTM Forecast with Dropout & Candlestick chart + signal markers
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
-                seq_len = min(60, df.shape[0]-1)
+                seq_len = min(60, df.shape[0] - 1)
                 X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
                 model = Sequential([
@@ -372,7 +394,8 @@ if run_button:
                     yaxis=dict(title='Price (USD)'),
                     yaxis2=dict(overlaying='y', side='right', showgrid=False, title='MACD Histogram'),
                     xaxis_title='Date',
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                    height=700
                 )
 
                 st.plotly_chart(fig2)
