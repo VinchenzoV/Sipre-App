@@ -115,35 +115,30 @@ def generate_signals(df):
 
 def backtest_signals(df, slippage=0.001, fee=0.001):
     df = df.copy()
-    df['Position'] = 0
-
-    buy_cond = (df['EMA9'].shift(1) < df['EMA21'].shift(1)) & (df['EMA9'] > df['EMA21']) & (df['RSI'] > 30)
-    sell_cond = (df['EMA9'].shift(1) > df['EMA21'].shift(1)) & (df['EMA9'] < df['EMA21']) & (df['RSI'] < 70)
-
-    df.loc[buy_cond, 'Position'] = 1
-    df.loc[sell_cond, 'Position'] = -1
-    df['Position'] = df['Position'].astype(int)
+    
+    # Create buy/sell signals based on EMA9/EMA21 crossover and RSI thresholds
+    buy_signals = (df['EMA9'].shift(1) < df['EMA21'].shift(1)) & (df['EMA9'] > df['EMA21']) & (df['RSI'] > 30)
+    sell_signals = (df['EMA9'].shift(1) > df['EMA21'].shift(1)) & (df['EMA9'] < df['EMA21']) & (df['RSI'] < 70)
 
     trades = []
     position = 0
     entry_price = 0.0
 
-    for idx, pos in zip(df.index, df['Position']):
-        price = df.loc[idx, 'Close']
-        if position == 0 and pos == 1:
-            # Buy with slippage and fee applied
+    for date, buy, sell, price in zip(df.index, buy_signals, sell_signals, df['Close']):
+        if position == 0 and buy:
+            # Enter long position: buy price adjusted for slippage and fee
             position = 1
             entry_price = price * (1 + slippage + fee)
-            trades.append({'Entry Date': idx, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
-        elif position == 1 and pos == -1:
-            # Sell with slippage and fee applied
+            trades.append({'Entry Date': date, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
+        elif position == 1 and sell:
+            # Exit long position: sell price adjusted for slippage and fee
             exit_price = price * (1 - slippage - fee)
             position = 0
-            trades[-1]['Exit Date'] = idx
+            trades[-1]['Exit Date'] = date
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
-    # If position still open at the end, close at last price
+    # Close open position at last price if still open
     if position == 1:
         exit_price = df['Close'].iloc[-1] * (1 - slippage - fee)
         trades[-1]['Exit Date'] = df.index[-1]
@@ -153,13 +148,12 @@ def backtest_signals(df, slippage=0.001, fee=0.001):
     trades_df = pd.DataFrame(trades)
 
     if not trades_df.empty:
-        trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
+        trades_df['Return %'] = trades_df['Return %'].astype(float)
         trades_df_clean = trades_df.dropna(subset=['Return %'])
-        total_return = trades_df_clean['Return %'].sum() if not trades_df_clean.empty else 0
-        win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
+        total_return = trades_df_clean['Return %'].sum()
+        win_rate = (trades_df_clean['Return %'] > 0).mean() * 100
         num_trades = len(trades_df_clean)
 
-        # Add cumulative returns for equity curve
         trades_df_clean['Cumulative Return'] = (1 + trades_df_clean['Return %'] / 100).cumprod() - 1
     else:
         total_return = 0
@@ -168,6 +162,7 @@ def backtest_signals(df, slippage=0.001, fee=0.001):
         trades_df_clean = pd.DataFrame()
 
     return trades_df, trades_df_clean, total_return, win_rate, num_trades
+
 
 def explain_signal(latest, prev):
     ema9_latest = float(latest["EMA9"])
