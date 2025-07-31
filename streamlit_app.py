@@ -124,10 +124,11 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         # --- Prophet Forecast ---
-        st.subheader("📅 Prophet Forecast (Next 30 Days)")
+        st.subheader("📅 Prophet Forecast (Next 15 Days)")
+
         df_reset = df.reset_index()
 
-        # Handle possible MultiIndex in columns
+        # Handle MultiIndex columns if any
         if isinstance(df_reset.columns, pd.MultiIndex):
             close_col = None
             for col in df_reset.columns:
@@ -143,51 +144,69 @@ if st.button("Get Prediction & Signal"):
                 st.error("No 'Close' column found.")
                 st.stop()
 
+        # Clip close prices so no zero or negative values before log transform
+        min_price_clip = max(1.0, df_reset[close_col].min())  # at least 1.0 or min close price, whichever is higher
+        prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
+
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': pd.to_numeric(df_reset[close_col], errors='coerce')
+            'y': np.log(prices_clipped)  # safer log transform
         }).dropna()
+
+        st.write("Sample of data used for Prophet:")
+        st.dataframe(prophet_df.head())
 
         if prophet_df.shape[0] < 30:
             st.warning("Not enough data for Prophet forecasting.")
         else:
-            # Log-transform price for smoother, more realistic forecast
-            epsilon = 1e-3
-            prophet_df['y'] = np.log(prophet_df['y'].clip(lower=epsilon))
-
             m = Prophet()
             m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=30)
+            future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            # Inverse transform predictions
-            forecast['yhat'] = np.exp(forecast['yhat'])
-            forecast['yhat_lower'] = np.exp(forecast['yhat_lower'])
-            forecast['yhat_upper'] = np.exp(forecast['yhat_upper'])
+            # Handle exponentiation carefully (clip yhat_lower to min positive value)
+            min_positive = 1e-3
+            forecast['yhat_exp'] = np.exp(forecast['yhat'])
+            forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
+            forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            fig1 = m.plot(forecast)
-            ax = fig1.gca()
-            ax.set_ylabel("Price (USD)")
-            st.pyplot(fig1.figure)
+            # Plot with confidence intervals using Plotly for better control
+            fig1 = go.Figure()
+            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
+            fig1.add_trace(go.Scatter(
+                x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
+                y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
+                fill='toself',
+                fillcolor='rgba(0,100,80,0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=True,
+                name='Confidence Interval'
+            ))
+            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next 15 Days)",
+                               yaxis_title='Price (USD)',
+                               xaxis_title='Date')
+            st.plotly_chart(fig1)
 
-            st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
+            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
         st.subheader("🤖 LSTM Future Price Prediction")
 
         try:
-            if df.shape[0] < 70:  # Require enough data to train sequence length
-                raise ValueError("Not enough data points for LSTM prediction (need at least ~70).")
+            if df.shape[0] < 50:  # reduced minimum for demo
+                raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
-            X, y, scaler = prepare_lstm_data(df)
+            seq_len = min(60, df.shape[0]-1)
+            X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
 
             model = Sequential()
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
             model.add(LSTM(units=50))
             model.add(Dense(1))
             model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, epochs=5, batch_size=32, verbose=0)
+            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
 
             future_input = X[-1].reshape(1, X.shape[1], 1)
             future_preds = []
@@ -198,14 +217,14 @@ if st.button("Get Prediction & Signal"):
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
             future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+            last_close = df['Close'].iloc[-1]
+
+            # Clip to no less than 90% of last close to avoid unrealistic drops
+            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
             future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
-            # Clip negative or unrealistically low predictions to 90% of last actual close price
-            last_close = df['Close'].iloc[-1]
-            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-
             df_future = pd.DataFrame({
-                'Date': pd.to_datetime(future_dates),
+                'Date': future_dates,
                 'Predicted Close': clipped_prices
             })
 
@@ -218,7 +237,9 @@ if st.button("Get Prediction & Signal"):
                                       name="LSTM Forecast", line=dict(dash='dot')))
             fig2.update_layout(
                 title=f"{symbol} — Combined Forecast View",
-                yaxis=dict(range=[yaxis_min, None])
+                yaxis=dict(range=[yaxis_min, None]),
+                xaxis_title="Date",
+                yaxis_title="Price (USD)"
             )
             st.plotly_chart(fig2)
 
