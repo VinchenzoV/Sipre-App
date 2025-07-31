@@ -2,7 +2,6 @@ streamlit
 yfinance
 pandas
 numpy
-matplotlib
 prophet
 scikit-learn
 tensorflow
