@@ -14,7 +14,7 @@ import traceback
 st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_symbols():
     try:
         url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
@@ -144,13 +144,13 @@ if st.button("Get Prediction & Signal"):
                 st.error("No 'Close' column found.")
                 st.stop()
 
-        # Clip close prices so no zero or negative values before log transform
-        min_price_clip = max(1.0, df_reset[close_col].min())  # at least 1.0 or min close price, whichever is higher
+        # Clip close prices to avoid zeros or negatives before log transform
+        min_price_clip = max(1.0, df_reset[close_col].min())
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped)  # safer log transform
+            'y': np.log(prices_clipped)
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -164,13 +164,11 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            # Handle exponentiation carefully (clip yhat_lower to min positive value)
             min_positive = 1e-3
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
             forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            # Plot with confidence intervals using Plotly for better control
             fig1 = go.Figure()
             fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
             fig1.add_trace(go.Scatter(
@@ -195,7 +193,7 @@ if st.button("Get Prediction & Signal"):
         st.subheader("🤖 LSTM Future Price Prediction")
 
         try:
-            if df.shape[0] < 50:  # reduced minimum for demo
+            if df.shape[0] < 50:
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
             seq_len = min(60, df.shape[0]-1)
