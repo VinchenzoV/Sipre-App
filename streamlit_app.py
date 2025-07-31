@@ -34,8 +34,13 @@ if not symbol:
     st.warning("Please enter or select a valid symbol.")
     st.stop()
 
-timeframe = st.selectbox("Select timeframe:", ["1mo", "3mo", "6mo", "1y"])
+timeframe = st.selectbox("Select timeframe for historical data:", ["1mo", "3mo", "6mo", "1y"])
 alert_email = st.text_input("Enter your email for alerts (optional):")
+
+# New inputs for forecast horizon
+forecast_length = st.number_input("Forecast length:", min_value=1, max_value=180, value=15, step=1)
+forecast_unit = st.selectbox("Forecast unit:", ["Days", "Months"])
+forecast_days = forecast_length * 30 if forecast_unit == "Months" else forecast_length
 
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
@@ -124,23 +129,22 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         # --- Prophet Forecast ---
-        st.subheader("📅 Prophet Forecast (Next 15 Days)")
+        st.subheader(f"📅 Prophet Forecast (Next {forecast_days} Days)")
 
         df_reset = df.reset_index()
 
         close_col = 'Close'
+        if close_col not in df_reset.columns:
+            st.error("No 'Close' column found.")
+            st.stop()
 
-        if isinstance(df_reset.columns, pd.MultiIndex):
-            close_series = df_reset[close_col].iloc[:, 0]
-        else:
-            close_series = df_reset[close_col]
-
-        min_price_clip = max(1.0, close_series.min())
-        prices_clipped = close_series.clip(lower=min_price_clip)
+        # Clip close prices so no zero or negative values before log transform
+        min_price_clip = max(1.0, df_reset[close_col].min())
+        prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped.values.flatten())
+            'y': np.log(prices_clipped).astype(float)
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -151,7 +155,7 @@ if st.button("Get Prediction & Signal"):
         else:
             m = Prophet()
             m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=15)
+            future = m.make_future_dataframe(periods=forecast_days)
             forecast = m.predict(future)
 
             min_positive = 1e-3
@@ -171,7 +175,7 @@ if st.button("Get Prediction & Signal"):
                 showlegend=True,
                 name='Confidence Interval'
             ))
-            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next 15 Days)",
+            fig1.update_layout(title=f"{symbol} Prophet Forecast (Log-Transformed, Next {forecast_days} Days)",
                                yaxis_title='Price (USD)',
                                xaxis_title='Date')
             st.plotly_chart(fig1)
@@ -180,7 +184,7 @@ if st.button("Get Prediction & Signal"):
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
-        st.subheader("🤖 LSTM Future Price Prediction")
+        st.subheader(f"🤖 LSTM Future Price Prediction (Next {forecast_days} Days)")
 
         try:
             if df.shape[0] < 50:
@@ -198,7 +202,7 @@ if st.button("Get Prediction & Signal"):
 
             future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
             future_preds = []
-            for _ in range(10):
+            for _ in range(forecast_days):
                 pred = model.predict(future_input, verbose=0)[0][0]
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
@@ -209,7 +213,13 @@ if st.button("Get Prediction & Signal"):
 
             # Clip to no less than 90% of last close to avoid unrealistic drops
             clipped_prices = np.clip(future_prices, last_close * 0.9, None)
-            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
+
+            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=forecast_days, freq='D')
+
+            # Ensure lengths match before creating DataFrame
+            if len(future_dates) != len(clipped_prices):
+                st.error("Length mismatch between future dates and predicted prices.")
+                st.stop()
 
             df_future = pd.DataFrame({
                 'Date': future_dates,
