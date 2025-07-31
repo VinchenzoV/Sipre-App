@@ -96,6 +96,27 @@ def send_email_alert(recipient, signal, symbol):
     except:
         st.error("Failed to send email alert.")
 
+def generate_signals(df):
+    df = df.copy()
+    df['Signal'] = 0
+    df['Position'] = 0
+
+    for i in range(1, len(df)):
+        if (df['EMA9'].iloc[i] > df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] > 30):
+            df.iloc[i, df.columns.get_loc('Signal')] = 1
+        elif (df['EMA9'].iloc[i] < df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] < 70):
+            df.iloc[i, df.columns.get_loc('Signal')] = -1
+        else:
+            df.iloc[i, df.columns.get_loc('Signal')] = 0
+
+    for i in range(1, len(df)):
+        if df.iloc[i, df.columns.get_loc('Signal')] == 0:
+            df.iloc[i, df.columns.get_loc('Position')] = df.iloc[i-1, df.columns.get_loc('Position')]
+        else:
+            df.iloc[i, df.columns.get_loc('Position')] = df.iloc[i, df.columns.get_loc('Signal')]
+
+    return df
+
 def backtest_signals(df):
     df = df.copy()
     df['Position'] = 0
@@ -179,27 +200,6 @@ def explain_signal(latest, prev):
 
     return signal, "; ".join(explanation), confidence
 
-def generate_signals(df):
-    df = df.copy()
-    df['Signal'] = 0
-    df['Position'] = 0
-
-    for i in range(1, len(df)):
-        if (df['EMA9'].iloc[i] > df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] > 30):
-            df.at[df.index[i], 'Signal'] = 1
-        elif (df['EMA9'].iloc[i] < df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] < 70):
-            df.at[df.index[i], 'Signal'] = -1
-        else:
-            df.at[df.index[i], 'Signal'] = 0
-
-    for i in range(1, len(df)):
-        if df.at[df.index[i], 'Signal'] == 0:
-            df.at[df.index[i], 'Position'] = df.at[df.index[i-1], 'Position']
-        else:
-            df.at[df.index[i], 'Position'] = df.at[df.index[i], 'Signal']
-
-    return df
-
 if "signal_log" not in st.session_state:
     st.session_state.signal_log = []
 
@@ -230,7 +230,7 @@ if run_button:
 
             df.dropna(inplace=True)
 
-            # Generate signals and positions
+            # Generate trading signals
             df = generate_signals(df)
 
             latest, prev = df.iloc[-1], df.iloc[-2]
