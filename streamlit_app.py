@@ -47,26 +47,6 @@ def calculate_rsi(prices, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def prepare_lstm_data(df, sequence_length=60):
-    n = df.shape[0]
-    if n <= sequence_length:
-        sequence_length = max(10, n - 1)
-        if sequence_length < 10:
-            raise ValueError("Still too little data for LSTM.")
-    
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df[['Close']])
-    X, y = [], []
-    for i in range(sequence_length, len(scaled_data)):
-        X.append(scaled_data[i-sequence_length:i])
-        y.append(scaled_data[i])
-    
-    X = np.array(X)
-    y = np.array(y)
-    if X.ndim != 3:
-        raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
-    return X, y, scaler
-
 def fetch_news_sentiment(symbol):
     try:
         url = f"https://finance.yahoo.com/quote/{symbol}"
@@ -128,29 +108,17 @@ if st.button("Get Prediction & Signal"):
 
         df_reset = df.reset_index()
 
-        # Handle MultiIndex columns if any
-        if isinstance(df_reset.columns, pd.MultiIndex):
-            close_col = None
-            for col in df_reset.columns:
-                if col[0].lower() == 'close':
-                    close_col = col
-                    break
-            if close_col is None:
-                st.error("No 'Close' column found.")
-                st.stop()
-        else:
-            close_col = 'Close'
-            if close_col not in df_reset.columns:
-                st.error("No 'Close' column found.")
-                st.stop()
+        close_col = 'Close'
+        if close_col not in df_reset.columns:
+            st.error("No 'Close' column found.")
+            st.stop()
 
-        # Clip close prices so no zero or negative values before log transform
-        min_price_clip = max(1.0, df_reset[close_col].min())  # at least 1.0 or min close price, whichever is higher
+        min_price_clip = max(1.0, df_reset[close_col].min())
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped)  # safer log transform
+            'y': np.log(prices_clipped)
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -164,13 +132,11 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            # Handle exponentiation carefully (clip yhat_lower to min positive value)
             min_positive = 1e-3
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
             forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            # Plot with confidence intervals using Plotly for better control
             fig1 = go.Figure()
             fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
             fig1.add_trace(go.Scatter(
@@ -200,7 +166,7 @@ if st.button("Get Prediction & Signal"):
 
             seq_len = min(60, df.shape[0] - 1)
 
-            # Use log returns for LSTM
+            # Compute log returns
             df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
             df.dropna(inplace=True)
 
@@ -214,8 +180,6 @@ if st.button("Get Prediction & Signal"):
 
             X = np.array(X)
             y = np.array(y)
-            if X.ndim != 3:
-                raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
 
             model = Sequential()
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
@@ -227,24 +191,27 @@ if st.button("Get Prediction & Signal"):
             model.fit(X, y, epochs=50, batch_size=32, verbose=0, callbacks=[early_stop])
 
             future_input = X[-1].reshape(1, X.shape[1], 1)
-            future_preds = []
+            future_preds_scaled = []
 
             for _ in range(10):
-                pred = model.predict(future_input, verbose=0)[0][0]
-                pred = np.clip(pred, 0, 1)
-                future_preds.append(pred)
-                pred_array = np.array([[[pred]]], dtype=np.float32)
+                pred_scaled = model.predict(future_input, verbose=0)[0][0]
+                pred_scaled = np.clip(pred_scaled, 0, 1)  # Strict clip to [0,1]
+                future_preds_scaled.append(pred_scaled)
+                pred_array = np.array([[[pred_scaled]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-            inv_preds = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+            future_preds = scaler.inverse_transform(np.array(future_preds_scaled).reshape(-1, 1)).flatten()
 
             last_close = df['Close'].iloc[-1]
-            future_prices = [last_close]
-            for r in inv_preds:
-                next_price = future_prices[-1] * np.exp(r)
-                next_price = max(next_price, future_prices[-1] * 0.9)  # Clip drop to 90%
+            future_prices = []
+            current_price = last_close
+
+            for r in future_preds:
+                next_price = current_price * np.exp(r)
+                if next_price < last_close * 0.9:
+                    next_price = last_close * 0.9
                 future_prices.append(next_price)
-            future_prices = future_prices[1:]
+                current_price = next_price
 
             future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
@@ -252,6 +219,9 @@ if st.button("Get Prediction & Signal"):
                 'Date': future_dates,
                 'Predicted Close': future_prices
             })
+
+            st.write("Debug: Predicted log returns (unscaled):", future_preds)
+            st.write("Debug: Predicted future prices:", future_prices)
 
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
             yaxis_min = max(min_price * 0.95, 0)
@@ -271,8 +241,6 @@ if st.button("Get Prediction & Signal"):
             st.dataframe(df_future, use_container_width=True)
             st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
-        except ValueError as ve:
-            st.warning(f"LSTM Skipped: {ve}")
         except Exception as e:
             st.error(f"❌ LSTM Error: {e}")
             st.text(traceback.format_exc())
