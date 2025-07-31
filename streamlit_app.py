@@ -211,8 +211,8 @@ if st.button("Get Prediction & Signal"):
 
             # Plot combined historical + forecast using Plotly
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
-            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
+            fig2.add_trace(go.Scatter(x=df.index.tolist(), y=df['Close'].tolist(), name="Historical"))
+            fig2.add_trace(go.Scatter(x=df_future['Date'].tolist(), y=df_future['Predicted Close'].tolist(),
                                       name="LSTM Forecast", line=dict(dash='dot')))
             fig2.update_layout(title=f"{symbol} — Combined Forecast View")
             st.plotly_chart(fig2)
