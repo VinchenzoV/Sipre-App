@@ -20,7 +20,6 @@ custom_symbol = st.text_input("Or enter a custom symbol:", value=symbol_choice)
 timeframe = st.selectbox("Select timeframe:", ["1mo", "3mo", "6mo", "1y"])
 alert_email = st.text_input("Enter your email for alerts (optional):")
 
-# --- Helper Functions ---
 def calculate_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
 
@@ -50,15 +49,12 @@ def fetch_news_sentiment(symbol):
 
 def send_email_alert(recipient, signal, symbol):
     try:
-        # Placeholder for actual email sending logic
         st.success(f"Alert email would be sent to {recipient} (demo)")
     except:
         st.error("Failed to send email alert.")
 
-# --- Main Signal Logic ---
 if st.button("Get Prediction & Signal"):
     try:
-        # Try timeframes in increasing order until enough data is found
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
         for tf in timeframes_to_try:
             df = yf.download(custom_symbol, period=tf, interval="1d")
@@ -78,7 +74,6 @@ if st.button("Get Prediction & Signal"):
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Convert to scalars before comparison
         ema9_latest = float(latest["EMA9"])
         ema21_latest = float(latest["EMA21"])
         ema9_prev = float(prev["EMA9"])
@@ -123,7 +118,7 @@ if st.button("Get Prediction & Signal"):
         for _ in range(10):
             pred = model.predict(future_input)[0][0]
             future_preds.append(pred)
-            future_input = np.append(future_input[:, 1:, :], [[[pred]]], axis=1)
+            future_input = np.concatenate((future_input[:, 1:, :], [[[pred]]]), axis=1)
 
         future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
         future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=10)
