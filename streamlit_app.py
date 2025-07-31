@@ -113,7 +113,12 @@ if st.button("Get Prediction & Signal"):
             st.error("No 'Close' column found.")
             st.stop()
 
-        min_price_clip = max(1.0, df_reset[close_col].min())
+        # FIXED: Safely handle min value to avoid Series ambiguity
+        min_val = df_reset[close_col].min()
+        if hasattr(min_val, 'values'):
+            min_val = min_val.values.min()
+        min_price_clip = max(1.0, float(min_val))
+
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
@@ -166,7 +171,7 @@ if st.button("Get Prediction & Signal"):
 
             seq_len = min(60, df.shape[0] - 1)
 
-            # Compute log returns
+            # Use log returns for LSTM stability
             df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
             df.dropna(inplace=True)
 
@@ -195,7 +200,7 @@ if st.button("Get Prediction & Signal"):
 
             for _ in range(10):
                 pred_scaled = model.predict(future_input, verbose=0)[0][0]
-                pred_scaled = np.clip(pred_scaled, 0, 1)  # Strict clip to [0,1]
+                pred_scaled = np.clip(pred_scaled, 0, 1)  # Clip strictly to [0,1]
                 future_preds_scaled.append(pred_scaled)
                 pred_array = np.array([[[pred_scaled]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
@@ -208,6 +213,7 @@ if st.button("Get Prediction & Signal"):
 
             for r in future_preds:
                 next_price = current_price * np.exp(r)
+                # Prevent unrealistic drops below 90% of last close
                 if next_price < last_close * 0.9:
                     next_price = last_close * 0.9
                 future_prices.append(next_price)
