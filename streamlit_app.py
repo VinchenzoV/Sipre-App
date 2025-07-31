@@ -114,25 +114,29 @@ if st.button("Get Prediction & Signal"):
         model.fit(X, y, epochs=5, batch_size=32, verbose=0)
 
         future_input = X[-1].reshape(1, X.shape[1], 1)
-        st.write("Initial future_input shape:", future_input.shape)
         future_preds = []
-        for i in range(10):
+        for _ in range(10):
             pred = model.predict(future_input)[0][0]
-            st.write(f"Step {i+1} prediction:", pred)
             future_preds.append(pred)
-            pred_array = np.array([[[pred]]], dtype=np.float32)  # shape (1,1,1)
-            st.write(f"pred_array shape: {pred_array.shape}")
-            st.write(f"future_input shape before concat: {future_input.shape}")
+            pred_array = np.array([[[pred]]], dtype=np.float32)
             future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
-            st.write(f"future_input shape after concat: {future_input.shape}")
 
-        future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
-        future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=10)
-        df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': future_prices.flatten()})
+        future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+        future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
+        future_dates = future_dates.to_pydatetime().tolist()
+
+        df_future = pd.DataFrame({
+            'Date': pd.to_datetime(future_dates),
+            'Predicted Close': future_prices
+        })
+
+        st.write("df_future['Date'] type:", type(df_future['Date']), "dtype:", df_future['Date'].dtype)
+        st.write("df_future['Predicted Close'] type:", type(df_future['Predicted Close']), "dtype:", df_future['Predicted Close'].dtype)
 
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], name="Historical"))
-        fig2.add_trace(go.Scatter(x=df_future['Date'], y=df_future['Predicted Close'], name="LSTM Forecast", line=dict(dash='dot')))
+        fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
+        fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
+                                  name="LSTM Forecast", line=dict(dash='dot')))
         fig2.update_layout(title=f"{custom_symbol} — Combined Forecast View")
         st.plotly_chart(fig2)
 
