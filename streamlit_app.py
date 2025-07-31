@@ -157,7 +157,6 @@ if st.button("Get Prediction & Signal"):
         if prophet_df.shape[0] < 30:
             st.warning("Not enough data for Prophet forecasting.")
         else:
-            # Log-transform prices (add small offset if any zero prices)
             epsilon = 1e-3
             prophet_df['y'] = np.log(prophet_df['y'].clip(lower=epsilon))
 
@@ -166,18 +165,15 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=30)
             forecast = m.predict(future)
 
-            # Inverse transform predictions back to price scale
             forecast['yhat'] = np.exp(forecast['yhat'])
             forecast['yhat_lower'] = np.exp(forecast['yhat_lower'])
             forecast['yhat_upper'] = np.exp(forecast['yhat_upper'])
 
-            # Plot forecast with matplotlib
             fig1 = m.plot(forecast)
             ax = fig1.gca()
             ax.set_ylabel("Price (USD)")
             st.pyplot(fig1.figure)
 
-            # Show forecast table and download option
             st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
@@ -209,15 +205,20 @@ if st.button("Get Prediction & Signal"):
                 'Predicted Close': future_prices
             })
 
-            # Plot combined historical + forecast using Plotly
+            # Define y-axis min with 5% buffer below minimum actual or predicted price
+            min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
+            yaxis_min = max(min_price * 0.95, 0)  # never below 0
+
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df.index.tolist(), y=df['Close'].tolist(), name="Historical"))
-            fig2.add_trace(go.Scatter(x=df_future['Date'].tolist(), y=df_future['Predicted Close'].tolist(),
+            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].values.flatten().tolist(), name="Historical"))
+            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
                                       name="LSTM Forecast", line=dict(dash='dot')))
-            fig2.update_layout(title=f"{symbol} — Combined Forecast View")
+            fig2.update_layout(
+                title=f"{symbol} — Combined Forecast View",
+                yaxis=dict(range=[yaxis_min, None])
+            )
             st.plotly_chart(fig2)
 
-            # Show LSTM forecast table and download option
             st.dataframe(df_future, use_container_width=True)
             st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
