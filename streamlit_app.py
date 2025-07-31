@@ -113,31 +113,29 @@ def generate_signals(df):
 
 def backtest_signals(df):
     df = df.copy()
-    df['Position'] = 0
+    df['Signal'] = 0
+    df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
+    df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
 
-    buy_cond = (df['EMA9'].shift(1) < df['EMA21'].shift(1)) & (df['EMA9'] > df['EMA21']) & (df['RSI'] > 30)
-    sell_cond = (df['EMA9'].shift(1) > df['EMA21'].shift(1)) & (df['EMA9'] < df['EMA21']) & (df['RSI'] < 70)
-
-    df.loc[buy_cond, 'Position'] = 1
-    df.loc[sell_cond, 'Position'] = -1
-    df['Position'] = df['Position'].astype(int)
-
-    trades = []
     position = 0
-    entry_price = 0.0
+    trades = []
 
-    for idx, pos in zip(df.index, df['Position']):
-        if position == 0 and pos == 1:
+    for idx, signal in zip(df.index, df['Signal']):
+        price = df.loc[idx, 'Close']
+
+        if position == 0 and signal == 1:
             position = 1
-            entry_price = df.loc[idx, 'Close']
+            entry_price = price
             trades.append({'Entry Date': idx, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
-        elif position == 1 and pos == -1:
-            exit_price = df.loc[idx, 'Close']
+
+        elif position == 1 and signal == -1:
+            exit_price = price
             position = 0
             trades[-1]['Exit Date'] = idx
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
+    # Close any open position at the end
     if position == 1:
         exit_price = df['Close'].iloc[-1]
         trades[-1]['Exit Date'] = df.index[-1]
@@ -145,19 +143,8 @@ def backtest_signals(df):
         trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
     trades_df = pd.DataFrame(trades)
+    return trades_df
 
-    if not trades_df.empty:
-        trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
-        trades_df_clean = trades_df.dropna(subset=['Return %'])
-        total_return = trades_df_clean['Return %'].sum() if not trades_df_clean.empty else 0
-        win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
-        num_trades = len(trades_df_clean)
-    else:
-        total_return = 0
-        win_rate = 0
-        num_trades = 0
-
-    return trades_df, total_return, win_rate, num_trades
 
 def explain_signal(latest, prev):
     ema9_latest = float(latest["EMA9"])
