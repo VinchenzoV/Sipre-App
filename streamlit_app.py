@@ -153,20 +153,30 @@ def explain_signal(latest, prev):
 
     explanation = []
     confidence = 0
+    signal = "Neutral"
 
-    if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
-        explanation.append("EMA9 crossed above EMA21 and RSI > 30")
-        confidence += (rsi_latest - 30) / 70
+    ema_diff_prev = ema9_prev - ema21_prev
+    ema_diff_latest = ema9_latest - ema21_latest
+
+    # Strength of EMA difference
+    ema_strength = abs(ema_diff_latest)
+
+    # Normalize RSI distances for confidence scaling
+    rsi_buy_conf = max(0, min(1, (rsi_latest - 30) / 40))   # RSI 30-70 scaled 0-1
+    rsi_sell_conf = max(0, min(1, (70 - rsi_latest) / 40))  # RSI 70-30 scaled 0-1
+
+    if (ema_diff_prev < 0) and (ema_diff_latest > 0) and (rsi_latest > 30):
         signal = "Buy ✅"
-    elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
-        explanation.append("EMA9 crossed below EMA21 and RSI < 70")
-        confidence += (70 - rsi_latest) / 70
+        explanation.append("EMA9 crossed above EMA21 and RSI > 30")
+        confidence = round(min(1, ema_strength * 10) * rsi_buy_conf, 2)
+    elif (ema_diff_prev > 0) and (ema_diff_latest < 0) and (rsi_latest < 70):
         signal = "Sell ❌"
+        explanation.append("EMA9 crossed below EMA21 and RSI < 70")
+        confidence = round(min(1, abs(ema_diff_latest) * 10) * rsi_sell_conf, 2)
     else:
-        signal = "Neutral"
         explanation.append("No clear crossover or RSI in neutral zone")
+        confidence = 0
 
-    confidence = round(min(max(confidence, 0), 1), 2)
     return signal, "; ".join(explanation), confidence
 
 if "signal_log" not in st.session_state:
@@ -202,7 +212,7 @@ if run_button:
 
             # Signal & explainability
             signal, explanation, confidence = explain_signal(latest, prev)
-            st.subheader(f"Signal: {signal} (Confidence: {confidence*100}%)")
+            st.subheader(f"Signal: {signal} (Confidence: {confidence * 100:.0f}%)")
             st.markdown(f"**Explanation:** {explanation}")
             st.markdown(f"**RSI:** {round(latest['RSI'], 2)}")
 
@@ -296,7 +306,6 @@ if run_button:
                 future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
                 df_future = pd.DataFrame({'Date': future_dates, 'Predicted Close': clipped_prices})
 
-                # Candlestick chart with indicators and signals
                 fig2 = go.Figure()
 
                 fig2.add_trace(go.Candlestick(
@@ -312,7 +321,7 @@ if run_button:
                 # MACD histogram as bar chart (secondary y-axis)
                 fig2.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='MACD Histogram', marker_color='grey', yaxis='y2'))
 
-                # Buy/Sell signal markers on price chart
+                # Buy/Sell signals markers
                 buy_signals = (df['EMA9'].shift(1) < df['EMA21'].shift(1)) & (df['EMA9'] > df['EMA21']) & (df['RSI'] > 30)
                 sell_signals = (df['EMA9'].shift(1) > df['EMA21'].shift(1)) & (df['EMA9'] < df['EMA21']) & (df['RSI'] < 70)
 
@@ -335,19 +344,19 @@ if run_button:
                     x=df_future['Date'],
                     y=df_future['Predicted Close'],
                     mode='lines',
-                    name='LSTM Forecast',
-                    line=dict(color='orange', dash='dot')
+                    line=dict(dash='dot', color='orange'),
+                    name='LSTM Forecast'
                 ))
 
                 fig2.update_layout(
-                    title=f"{symbol} Price Chart with Indicators and LSTM Forecast",
-                    xaxis_title="Date",
-                    yaxis_title="Price (USD)",
-                    yaxis2=dict(overlaying='y', side='right', showgrid=False, title='MACD Histogram')
+                    title=f"{symbol} Price with Indicators and LSTM Forecast",
+                    yaxis=dict(title='Price (USD)'),
+                    yaxis2=dict(overlaying='y', side='right', showgrid=False, title='MACD Histogram'),
+                    xaxis_title='Date',
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
                 )
 
                 st.plotly_chart(fig2)
-
                 st.dataframe(df_future, use_container_width=True)
                 st.download_button("Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
 
