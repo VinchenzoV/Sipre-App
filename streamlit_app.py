@@ -13,7 +13,7 @@ import traceback
 st.set_page_config(page_title="📈 Sipre Pro — Predictive Trading Signal Dashboard", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-@st.cache_data(show_spinner=False)
+@st.cache_data
 def load_symbols():
     try:
         url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
@@ -48,12 +48,10 @@ def calculate_ema(series, span):
 
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
-    gain = delta.where(delta > 0, 0).ewm(alpha=1/period, adjust=False).mean()  # Wilder smoothing
-    loss = -delta.where(delta < 0, 0).ewm(alpha=1/period, adjust=False).mean()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.fillna(0)  # Fill initial NaNs with 0
-    return rsi
+    return 100 - (100 / (1 + rs))
 
 def calculate_macd(df, fast=12, slow=26, signal=9):
     ema_fast = calculate_ema(df['Close'], fast)
@@ -106,8 +104,8 @@ def generate_signals(df):
     # Signal = -1 when EMA9 < EMA21 and RSI < 70
     df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
 
-    # Replace 0 with NaN then forward fill (fix deprecated usage)
-    df['Position'] = df['Signal'].replace(0, np.nan).ffill().fillna(0).astype(int)
+    # Forward fill Position based on Signal changes
+    df['Position'] = df['Signal'].replace(to_replace=0, method='ffill').fillna(0).astype(int)
 
     return df
 
@@ -336,14 +334,11 @@ if run_button:
             dates = pd.to_datetime(df_reset[df_reset.columns[0]]).values.flatten()
 
             prophet_df = pd.DataFrame({'ds': dates, 'y': np.log1p(prices)}).dropna()
-            prophet_df = prophet_df.sort_values('ds')  # Ensure sorted by date
-
             if len(prophet_df) < 30:
                 st.warning("Not enough data for Prophet.")
             else:
-                with st.spinner("Training Prophet model..."):
-                    m = Prophet()
-                    m.fit(prophet_df)
+                m = Prophet()
+                m.fit(prophet_df)
                 future = m.make_future_dataframe(periods=int(prophet_period))
                 forecast = m.predict(future)
 
