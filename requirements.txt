@@ -1,4 +1,10 @@
 streamlit
 yfinance
-matplotlib
 pandas
+numpy
+matplotlib
+plotly
+prophet
+scikit-learn
+tensorflow
+requests
