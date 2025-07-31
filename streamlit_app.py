@@ -99,23 +99,17 @@ def send_email_alert(recipient, signal, symbol):
 def generate_signals(df):
     df = df.copy()
     df['Signal'] = 0
-    df['Position'] = 0
 
-    for i in range(1, len(df)):
-        if (df['EMA9'].iloc[i] > df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] > 30):
-            df.iloc[i, df.columns.get_loc('Signal')] = 1
-        elif (df['EMA9'].iloc[i] < df['EMA21'].iloc[i]) and (df['RSI'].iloc[i] < 70):
-            df.iloc[i, df.columns.get_loc('Signal')] = -1
-        else:
-            df.iloc[i, df.columns.get_loc('Signal')] = 0
+    # Signal = 1 when EMA9 > EMA21 and RSI > 30
+    df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
+    # Signal = -1 when EMA9 < EMA21 and RSI < 70
+    df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
 
-    for i in range(1, len(df)):
-        if df.iloc[i, df.columns.get_loc('Signal')] == 0:
-            df.iloc[i, df.columns.get_loc('Position')] = df.iloc[i-1, df.columns.get_loc('Position')]
-        else:
-            df.iloc[i, df.columns.get_loc('Position')] = df.iloc[i, df.columns.get_loc('Signal')]
+    # Forward fill Position based on Signal changes
+    df['Position'] = df['Signal'].replace(to_replace=0, method='ffill').fillna(0).astype(int)
 
     return df
+
 
 def backtest_signals(df):
     df = df.copy()
