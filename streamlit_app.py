@@ -118,9 +118,8 @@ if st.button("Get Prediction & Signal"):
         for _ in range(10):
             pred = model.predict(future_input)[0][0]
             future_preds.append(pred)
-            # Ensure pred is converted to a numpy array with shape (1,1,1) before concat
-            pred_reshaped = np.array(pred).reshape(1, 1, 1)
-            future_input = np.concatenate((future_input[:, 1:, :], pred_reshaped), axis=1)
+            pred_array = np.array(pred).reshape(1, 1, 1)
+            future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
         future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
         future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=10)
