@@ -114,12 +114,17 @@ if st.button("Get Prediction & Signal"):
         model.fit(X, y, epochs=5, batch_size=32, verbose=0)
 
         future_input = X[-1].reshape(1, X.shape[1], 1)
+        st.write("Initial future_input shape:", future_input.shape)
         future_preds = []
-        for _ in range(10):
+        for i in range(10):
             pred = model.predict(future_input)[0][0]
+            st.write(f"Step {i+1} prediction:", pred)
             future_preds.append(pred)
-            pred_array = np.array(pred).reshape(1, 1, 1)
+            pred_array = np.array([[[pred]]], dtype=np.float32)  # shape (1,1,1)
+            st.write(f"pred_array shape: {pred_array.shape}")
+            st.write(f"future_input shape before concat: {future_input.shape}")
             future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
+            st.write(f"future_input shape after concat: {future_input.shape}")
 
         future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1))
         future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=10)
