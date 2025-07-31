@@ -27,7 +27,6 @@ def load_symbols():
 symbols_list = load_symbols()
 
 user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
-
 if user_input:
     filtered_symbols = [s for s in symbols_list if user_input in s]
 else:
@@ -38,7 +37,6 @@ if filtered_symbols:
     selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols)
 
 symbol = user_input if user_input else selected_symbol
-
 if not symbol:
     st.warning("Please enter or select a valid symbol.")
     st.stop()
@@ -57,13 +55,21 @@ def calculate_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def prepare_lstm_data(df, sequence_length=60):
+    if df.shape[0] <= sequence_length:
+        raise ValueError("Not enough data for LSTM prediction. Need at least 60 data points.")
+    
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df[['Close']])
     X, y = [], []
     for i in range(sequence_length, len(scaled_data)):
         X.append(scaled_data[i-sequence_length:i])
         y.append(scaled_data[i])
-    return np.array(X), np.array(y), scaler
+    
+    X = np.array(X)
+    y = np.array(y)
+    if X.ndim != 3:
+        raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
+    return X, y, scaler
 
 def fetch_news_sentiment(symbol):
     try:
@@ -122,65 +128,60 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
-
         prophet_df = df.reset_index()
-
-        datetime_col = df.index.name if df.index.name else 'Date'
-        if datetime_col not in prophet_df.columns:
-            datetime_col = prophet_df.columns[0]
-
+        datetime_col = prophet_df.columns[0]
         prophet_df = pd.DataFrame({
-            'ds': prophet_df[datetime_col],
-            'y': prophet_df['Close'].squeeze()  # <-- Important fix here to ensure 1D
-        })
+            'ds': pd.to_datetime(prophet_df[datetime_col]),
+            'y': pd.to_numeric(prophet_df['Close'].squeeze(), errors='coerce')
+        }).dropna()
 
-        st.write("Prepared DataFrame for Prophet:", prophet_df.head())
-        st.write(f"Type of prophet_df['y']: {type(prophet_df['y'])}")
-
-        prophet_df['y'] = pd.to_numeric(prophet_df['y'], errors='coerce')
-        prophet_df = prophet_df.dropna(subset=['y'])
-
-        st.write("Cleaned data for Prophet:", prophet_df.head())
-
-        m = Prophet()
-        m.fit(prophet_df)
-        future = m.make_future_dataframe(periods=30)
-        forecast = m.predict(future)
-        fig1 = m.plot(forecast)
-        st.pyplot(fig1)
+        if prophet_df.shape[0] < 30:
+            st.warning("Not enough data for Prophet forecasting.")
+        else:
+            m = Prophet()
+            m.fit(prophet_df)
+            future = m.make_future_dataframe(periods=30)
+            forecast = m.predict(future)
+            fig1 = m.plot(forecast)
+            st.pyplot(fig1.figure)
 
         st.subheader("🤖 LSTM Future Price Prediction")
-        X, y, scaler = prepare_lstm_data(df)
-        model = Sequential()
-        model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
-        model.add(LSTM(units=50))
-        model.add(Dense(1))
-        model.compile(optimizer='adam', loss='mean_squared_error')
-        model.fit(X, y, epochs=5, batch_size=32, verbose=0)
+        try:
+            X, y, scaler = prepare_lstm_data(df)
+            model = Sequential()
+            model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
+            model.add(LSTM(units=50))
+            model.add(Dense(1))
+            model.compile(optimizer='adam', loss='mean_squared_error')
+            model.fit(X, y, epochs=5, batch_size=32, verbose=0)
 
-        future_input = X[-1].reshape(1, X.shape[1], 1)
-        future_preds = []
-        for _ in range(10):
-            pred = model.predict(future_input)[0][0]
-            future_preds.append(pred)
-            pred_array = np.array([[[pred]]], dtype=np.float32)
-            future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
+            future_input = X[-1].reshape(1, X.shape[1], 1)
+            future_preds = []
+            for _ in range(10):
+                pred = model.predict(future_input)[0][0]
+                future_preds.append(pred)
+                pred_array = np.array([[[pred]]], dtype=np.float32)
+                future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-        future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
-        future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
-        future_dates = future_dates.to_pydatetime().tolist()
+            future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+            future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
-        df_future = pd.DataFrame({
-            'Date': pd.to_datetime(future_dates),
-            'Predicted Close': future_prices
-        })
+            df_future = pd.DataFrame({
+                'Date': pd.to_datetime(future_dates),
+                'Predicted Close': future_prices
+            })
 
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
-        fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
-                                  name="LSTM Forecast", line=dict(dash='dot')))
-        fig2.update_layout(title=f"{symbol} — Combined Forecast View")
-        st.plotly_chart(fig2)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
+            fig2.add_trace(go.Scatter(x=df_future['Date'].to_list(), y=df_future['Predicted Close'].to_list(),
+                                      name="LSTM Forecast", line=dict(dash='dot')))
+            fig2.update_layout(title=f"{symbol} — Combined Forecast View")
+            st.plotly_chart(fig2)
+        except ValueError as ve:
+            st.warning(f"LSTM Skipped: {ve}")
+        except Exception as e:
+            st.error(f"❌ LSTM Error: {e}")
+            st.text(traceback.format_exc())
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
