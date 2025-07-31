@@ -124,10 +124,22 @@ if st.button("Get Prediction & Signal"):
         st.markdown(fetch_news_sentiment(symbol))
 
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
+
         df_reset = df.reset_index()
+        st.write("Debug: df_reset columns:", df_reset.columns.tolist())
+
+        if 'Close' in df_reset.columns:
+            close_col = 'Close'
+        else:
+            close_cols = [col for col in df_reset.columns if 'Close' in str(col)]
+            if len(close_cols) == 0:
+                st.error("No 'Close' column found in data!")
+                st.stop()
+            close_col = close_cols[0]
+
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': pd.to_numeric(df_reset['Close'], errors='coerce')
+            'y': pd.to_numeric(df_reset[close_col], errors='coerce')
         }).dropna()
 
         if prophet_df.shape[0] < 30:
