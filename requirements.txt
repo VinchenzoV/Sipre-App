@@ -2,7 +2,8 @@ streamlit
 yfinance
 pandas
 numpy
-plotly
 prophet
 scikit-learn
 tensorflow
+requests
+plotly
