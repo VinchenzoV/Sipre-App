@@ -83,7 +83,6 @@ def send_email_alert(recipient, signal, symbol):
 
 if st.button("Get Prediction & Signal"):
     try:
-        # Download data, try timeframes from selected to longer if needed
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
         for tf in timeframes_to_try:
             df = yf.download(symbol, period=tf, interval="1d")
@@ -95,7 +94,6 @@ if st.button("Get Prediction & Signal"):
             st.stop()
 
         df.dropna(inplace=True)
-        # Calculate indicators
         df['EMA9'] = calculate_ema(df['Close'], 9)
         df['EMA21'] = calculate_ema(df['Close'], 21)
         df['RSI'] = calculate_rsi(df['Close'])
@@ -147,12 +145,12 @@ if st.button("Get Prediction & Signal"):
                 st.stop()
 
         # Clip close prices so no zero or negative values before log transform
-        min_price_clip = max(1.0, df_reset[close_col].min())
+        min_price_clip = max(1.0, df_reset[close_col].min())  # at least 1.0 or min close price, whichever is higher
         prices_clipped = df_reset[close_col].clip(lower=min_price_clip)
 
         prophet_df = pd.DataFrame({
             'ds': pd.to_datetime(df_reset[df_reset.columns[0]]),
-            'y': np.log(prices_clipped)
+            'y': np.log(prices_clipped)  # safer log transform
         }).dropna()
 
         st.write("Sample of data used for Prophet:")
@@ -166,17 +164,15 @@ if st.button("Get Prediction & Signal"):
             future = m.make_future_dataframe(periods=15)
             forecast = m.predict(future)
 
-            # Clip yhat_lower to avoid exp of large negative number (close to 0)
+            # Handle exponentiation carefully (clip yhat_lower to min positive value)
             min_positive = 1e-3
             forecast['yhat_exp'] = np.exp(forecast['yhat'])
             forecast['yhat_lower_exp'] = np.exp(forecast['yhat_lower'].clip(lower=np.log(min_positive)))
             forecast['yhat_upper_exp'] = np.exp(forecast['yhat_upper'])
 
-            # Smooth the forecast curve with rolling median to avoid sudden drops
-            forecast['yhat_exp_smooth'] = forecast['yhat_exp'].rolling(window=3, center=True, min_periods=1).median()
-
+            # Plot with confidence intervals using Plotly for better control
             fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp_smooth'], mode='lines', name='Forecast'))
+            fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
             fig1.add_trace(go.Scatter(
                 x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
                 y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
@@ -192,7 +188,7 @@ if st.button("Get Prediction & Signal"):
                                xaxis_title='Date')
             st.plotly_chart(fig1)
 
-            st.dataframe(forecast[['ds', 'yhat_exp_smooth', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+            st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
             st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         # --- LSTM Forecast ---
@@ -203,35 +199,58 @@ if st.button("Get Prediction & Signal"):
                 raise ValueError("Not enough data points for LSTM prediction (need at least 50).")
 
             seq_len = min(60, df.shape[0] - 1)
-            X, y, scaler = prepare_lstm_data(df, sequence_length=seq_len)
+
+            # Use log returns for LSTM
+            df['LogReturn'] = np.log(df['Close'] / df['Close'].shift(1))
+            df.dropna(inplace=True)
+
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            scaled_returns = scaler.fit_transform(df[['LogReturn']])
+
+            X, y = [], []
+            for i in range(seq_len, len(scaled_returns)):
+                X.append(scaled_returns[i - seq_len:i])
+                y.append(scaled_returns[i])
+
+            X = np.array(X)
+            y = np.array(y)
+            if X.ndim != 3:
+                raise ValueError(f"Unexpected LSTM input shape: {X.shape}")
 
             model = Sequential()
             model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
             model.add(LSTM(units=50))
             model.add(Dense(1))
             model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+
+            early_stop = tf.keras.callbacks.EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
+            model.fit(X, y, epochs=50, batch_size=32, verbose=0, callbacks=[early_stop])
 
             future_input = X[-1].reshape(1, X.shape[1], 1)
             future_preds = []
+
             for _ in range(10):
                 pred = model.predict(future_input, verbose=0)[0][0]
-                # Clip prediction to [0,1] since scaler expects this range
                 pred = np.clip(pred, 0, 1)
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-            future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
-            last_close = df['Close'].iloc[-1]
+            inv_preds = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
 
-            # Clip to no less than 90% of last close to avoid unrealistic drops
-            clipped_prices = np.clip(future_prices, last_close * 0.9, None)
+            last_close = df['Close'].iloc[-1]
+            future_prices = [last_close]
+            for r in inv_preds:
+                next_price = future_prices[-1] * np.exp(r)
+                next_price = max(next_price, future_prices[-1] * 0.9)  # Clip drop to 90%
+                future_prices.append(next_price)
+            future_prices = future_prices[1:]
+
             future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=10, freq='D')
 
             df_future = pd.DataFrame({
                 'Date': future_dates,
-                'Predicted Close': clipped_prices
+                'Predicted Close': future_prices
             })
 
             min_price = min(df['Close'].min(), df_future['Predicted Close'].min())
