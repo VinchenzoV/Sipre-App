@@ -97,10 +97,6 @@ def send_email_alert(recipient, signal, symbol):
         st.error("Failed to send email alert.")
 
 def backtest_signals(df):
-    """
-    Backtest Buy/Sell signals based on EMA9/EMA21 crossovers and RSI.
-    Returns DataFrame with trades, and performance stats.
-    """
     df = df.copy()
     df['Position'] = 0
 
@@ -127,7 +123,6 @@ def backtest_signals(df):
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - entry_price) / entry_price * 100
 
-    # Close open position at last date if any
     if position == 1:
         exit_price = df['Close'].iloc[-1]
         trades[-1]['Exit Date'] = df.index[-1]
@@ -136,9 +131,16 @@ def backtest_signals(df):
 
     trades_df = pd.DataFrame(trades)
 
-    total_return = trades_df['Return %'].sum() if not trades_df.empty else 0
-    win_rate = (trades_df['Return %'] > 0).mean() * 100 if not trades_df.empty else 0
-    num_trades = len(trades_df)
+    if not trades_df.empty:
+        trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
+        trades_df_clean = trades_df.dropna(subset=['Return %'])
+        total_return = trades_df_clean['Return %'].sum() if not trades_df_clean.empty else 0
+        win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
+        num_trades = len(trades_df_clean)
+    else:
+        total_return = 0
+        win_rate = 0
+        num_trades = 0
 
     return trades_df, total_return, win_rate, num_trades
 
@@ -166,7 +168,6 @@ def explain_signal(latest, prev):
 
     confidence = round(min(max(confidence, 0), 1), 2)
     return signal, "; ".join(explanation), confidence
-
 
 if "signal_log" not in st.session_state:
     st.session_state.signal_log = []
@@ -342,17 +343,9 @@ if run_button:
                     title=f"{symbol} Price Chart with Indicators and LSTM Forecast",
                     xaxis_title="Date",
                     yaxis_title="Price (USD)",
-                    yaxis2=dict(
-                        title='MACD Histogram',
-                        overlaying='y',
-                        side='right',
-                        showgrid=False,
-                        zeroline=True,
-                        zerolinewidth=1,
-                        zerolinecolor='grey'
-                    ),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    yaxis2=dict(overlaying='y', side='right', showgrid=False, title='MACD Histogram')
                 )
+
                 st.plotly_chart(fig2)
 
                 st.dataframe(df_future, use_container_width=True)
