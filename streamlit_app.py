@@ -15,7 +15,7 @@ import traceback
 st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-# Updated symbol loader with fallback and working URL
+# Load symbols with fallback (using a reliable source)
 @st.cache_data
 def load_symbols():
     try:
@@ -23,17 +23,22 @@ def load_symbols():
         df = pd.read_csv(url)
         return df['Symbol'].dropna().str.upper().tolist()
     except Exception:
-        # fallback list if download fails
+        # fallback hardcoded list
         return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
 
 symbols_list = load_symbols()
 
-# User input for symbol with autocomplete simulation
-user_input = st.text_input("Enter symbol:", value="AAPL").upper()
-matching_symbols = [s for s in symbols_list if user_input in s.upper()]
+# 1. User types partial symbol here:
+user_input = st.text_input("Enter symbol (type to filter):").upper().strip()
 
-if matching_symbols:
-    symbol = st.selectbox("Select symbol from matches:", matching_symbols, index=0)
+# 2. Dynamically filter the list based on input and show dropdown:
+if user_input:
+    filtered_symbols = [s for s in symbols_list if user_input in s]
+else:
+    filtered_symbols = symbols_list
+
+if filtered_symbols:
+    symbol = st.selectbox("Select symbol:", filtered_symbols, index=0)
 else:
     st.warning("No matching symbols found.")
     symbol = None
@@ -119,6 +124,11 @@ if symbol:
 
             st.subheader("📅 Prophet Forecast (Next 30 Days)")
             prophet_df = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+
+            # Clean data to fix Prophet error:
+            prophet_df['y'] = pd.to_numeric(prophet_df['y'], errors='coerce')
+            prophet_df = prophet_df.dropna(subset=['y'])
+
             m = Prophet()
             m.fit(prophet_df)
             future = m.make_future_dataframe(periods=30)
@@ -151,9 +161,6 @@ if symbol:
                 'Date': pd.to_datetime(future_dates),
                 'Predicted Close': future_prices
             })
-
-            st.write("df_future['Date'] type:", type(df_future['Date']), "dtype:", df_future['Date'].dtype)
-            st.write("df_future['Predicted Close'] type:", type(df_future['Predicted Close']), "dtype:", df_future['Predicted Close'].dtype)
 
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(x=df.index.to_list(), y=df['Close'].to_list(), name="Historical"))
