@@ -1,4 +1,3 @@
-# Sipre Pro: Full-featured Predictive Trading Dashboard
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -10,8 +9,6 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 import requests
-import smtplib
-from email.mime.text import MIMEText
 import plotly.graph_objs as go
 
 st.set_page_config(page_title="Sipre Pro", layout="wide")
@@ -53,11 +50,7 @@ def fetch_news_sentiment(symbol):
 
 def send_email_alert(recipient, signal, symbol):
     try:
-        msg = MIMEText(f"Signal alert for {symbol}: {signal}")
-        msg['Subject'] = f"Sipre Signal Alert — {symbol}"
-        msg['From'] = "sipre.alerts@example.com"
-        msg['To'] = recipient
-        # Placeholder for real SMTP server setup
+        # Placeholder for actual email sending logic
         st.success(f"Alert email would be sent to {recipient} (demo)")
     except:
         st.error("Failed to send email alert.")
@@ -84,13 +77,22 @@ if st.button("Get Prediction & Signal"):
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
+
+        # Convert to scalars before comparison
+        ema9_latest = float(latest["EMA9"])
+        ema21_latest = float(latest["EMA21"])
+        ema9_prev = float(prev["EMA9"])
+        ema21_prev = float(prev["EMA21"])
+        rsi_latest = float(latest["RSI"])
+
         signal = "Neutral"
-        if prev['EMA9'] < prev['EMA21'] and latest['EMA9'] > latest['EMA21'] and latest['RSI'] > 30:
+        if (ema9_prev < ema21_prev) and (ema9_latest > ema21_latest) and (rsi_latest > 30):
             signal = "Buy ✅"
-        elif prev['EMA9'] > prev['EMA21'] and latest['EMA9'] < latest['EMA21'] and latest['RSI'] < 70:
+        elif (ema9_prev > ema21_prev) and (ema9_latest < ema21_latest) and (rsi_latest < 70):
             signal = "Sell ❌"
+
         st.subheader(f"📌 Signal: {signal}")
-        st.markdown(f"**RSI:** {round(latest['RSI'], 2)}")
+        st.markdown(f"**RSI:** {round(rsi_latest, 2)}")
 
         if alert_email and signal != "Neutral":
             send_email_alert(alert_email, signal, custom_symbol)
