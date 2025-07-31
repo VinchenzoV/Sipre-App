@@ -30,11 +30,19 @@ symbols_list = load_symbols()
 with st.sidebar:
     st.header("Settings")
     user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
+
     if user_input and user_input in symbols_list:
+        # Exact match found, use it directly
         symbol = user_input
+        st.write(f"Using exact symbol: **{symbol}**")
     else:
+        # Filter list by partial match or show full list if input empty
         filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
-        symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
+        if filtered_symbols:
+            symbol = st.selectbox("Or select from suggestions:", filtered_symbols)
+        else:
+            st.warning("No matching symbols found.")
+            symbol = None
 
     timeframe = st.selectbox("Select timeframe for historical data:", ["1mo", "3mo", "6mo", "1y"], index=2)
     alert_email = st.text_input("Enter your email for alerts (optional):")
@@ -42,9 +50,6 @@ with st.sidebar:
     lstm_period = st.number_input("Number of days to predict (LSTM):", min_value=5, max_value=90, value=30, step=5)
     run_button = st.button("Run Prediction")
 
-if not symbol:
-    st.warning("Please enter or select a valid symbol on the sidebar.")
-    st.stop()
 
 # --- Cache yfinance data download ---
 @st.cache_data(ttl=3600)
