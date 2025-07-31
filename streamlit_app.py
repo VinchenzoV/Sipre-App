@@ -27,16 +27,10 @@ def load_symbols():
 symbols_list = load_symbols()
 
 user_input = st.text_input("Enter symbol (e.g. LNR.TO or AAPL):").upper().strip()
-if user_input:
-    filtered_symbols = [s for s in symbols_list if user_input in s]
-else:
-    filtered_symbols = symbols_list
-
-selected_symbol = None
-if filtered_symbols:
-    selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols)
-
+filtered_symbols = [s for s in symbols_list if user_input in s] if user_input else symbols_list
+selected_symbol = st.selectbox("Or select from suggestions:", filtered_symbols) if filtered_symbols else None
 symbol = user_input if user_input else selected_symbol
+
 if not symbol:
     st.warning("Please enter or select a valid symbol.")
     st.stop()
@@ -56,7 +50,9 @@ def calculate_rsi(prices, period=14):
 
 def prepare_lstm_data(df, sequence_length=60):
     if df.shape[0] <= sequence_length:
-        raise ValueError("Not enough data for LSTM prediction. Need at least 60 data points.")
+        sequence_length = max(10, df.shape[0] - 1)
+        if sequence_length < 10:
+            raise ValueError("Still too little data for LSTM.")
     
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(df[['Close']])
@@ -90,11 +86,11 @@ if st.button("Get Prediction & Signal"):
         timeframes_to_try = [timeframe, "3mo", "6mo", "1y"]
         for tf in timeframes_to_try:
             df = yf.download(symbol, period=tf, interval="1d")
-            if len(df) >= 60:
+            if len(df) >= 30:
                 st.info(f"Using timeframe: {tf}")
                 break
         else:
-            st.warning("⚠️ Not enough data available for this symbol across all timeframes.")
+            st.warning("⚠️ Not enough data available for this symbol.")
             st.stop()
 
         df.dropna(inplace=True)
@@ -129,10 +125,9 @@ if st.button("Get Prediction & Signal"):
 
         st.subheader("📅 Prophet Forecast (Next 30 Days)")
         prophet_df = df.reset_index()
-        datetime_col = prophet_df.columns[0]
         prophet_df = pd.DataFrame({
-            'ds': pd.to_datetime(prophet_df[datetime_col]),
-            'y': pd.to_numeric(prophet_df['Close'].squeeze(), errors='coerce')
+            'ds': pd.to_datetime(prophet_df[prophet_df.columns[0]]),
+            'y': pd.to_numeric(prophet_df['Close'], errors='coerce')
         }).dropna()
 
         if prophet_df.shape[0] < 30:
@@ -144,6 +139,9 @@ if st.button("Get Prediction & Signal"):
             forecast = m.predict(future)
             fig1 = m.plot(forecast)
             st.pyplot(fig1.figure)
+
+            st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
+            st.download_button("📥 Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
         st.subheader("🤖 LSTM Future Price Prediction")
         try:
@@ -158,7 +156,7 @@ if st.button("Get Prediction & Signal"):
             future_input = X[-1].reshape(1, X.shape[1], 1)
             future_preds = []
             for _ in range(10):
-                pred = model.predict(future_input)[0][0]
+                pred = model.predict(future_input, verbose=0)[0][0]
                 future_preds.append(pred)
                 pred_array = np.array([[[pred]]], dtype=np.float32)
                 future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
@@ -177,6 +175,10 @@ if st.button("Get Prediction & Signal"):
                                       name="LSTM Forecast", line=dict(dash='dot')))
             fig2.update_layout(title=f"{symbol} — Combined Forecast View")
             st.plotly_chart(fig2)
+
+            st.dataframe(df_future, use_container_width=True)
+            st.download_button("📥 Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
+
         except ValueError as ve:
             st.warning(f"LSTM Skipped: {ve}")
         except Exception as e:
