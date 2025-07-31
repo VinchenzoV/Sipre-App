@@ -15,19 +15,21 @@ import traceback
 st.set_page_config(page_title="Sipre Pro", layout="wide")
 st.title("📈 Sipre Pro — Predictive Trading Signal Dashboard")
 
-# Load a large list of ticker symbols for autocomplete (You can replace this with your own list or API)
+# Updated symbol loader with fallback and working URL
 @st.cache_data
 def load_symbols():
-    url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents_symbols.txt"
-    # This is just S&P500 symbols as example; ideally use a more complete source
-    symbols = pd.read_csv(url, header=None)[0].tolist()
-    return symbols
+    try:
+        url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
+        df = pd.read_csv(url)
+        return df['Symbol'].dropna().str.upper().tolist()
+    except Exception:
+        # fallback list if download fails
+        return ["AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NVDA", "SPY", "BTC-USD", "ETH-USD"]
 
 symbols_list = load_symbols()
 
 # User input for symbol with autocomplete simulation
 user_input = st.text_input("Enter symbol:", value="AAPL").upper()
-# Filter symbols based on user input substring match (case insensitive)
 matching_symbols = [s for s in symbols_list if user_input in s.upper()]
 
 if matching_symbols:
@@ -36,7 +38,6 @@ else:
     st.warning("No matching symbols found.")
     symbol = None
 
-# Proceed only if symbol selected
 if symbol:
     timeframe = st.selectbox("Select timeframe:", ["1mo", "3mo", "6mo", "1y"])
     alert_email = st.text_input("Enter your email for alerts (optional):")
