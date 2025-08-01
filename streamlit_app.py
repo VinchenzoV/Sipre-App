@@ -99,12 +99,9 @@ def generate_signals(df):
     df = df.copy()
     df['Signal'] = 0
 
-    # Signal = 1 when EMA9 > EMA21 and RSI > 30
     df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
-    # Signal = -1 when EMA9 < EMA21 and RSI < 70
     df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
 
-    # Forward fill Position based on Signal changes
     df['Position'] = df['Signal'].replace(to_replace=0, method='ffill').fillna(0).astype(int)
 
     return df
@@ -146,7 +143,6 @@ def backtest_signals(df, initial_cash=1000):
             trades[-1]['Return %'] = (exit_price - trades[-1]['Entry Price']) / trades[-1]['Entry Price'] * 100
             shares = 0
 
-    # Close open position at last date if any
     if position == 1:
         exit_price = df['Close'].iloc[-1]
         exit_date = df.index[-1]
@@ -160,7 +156,10 @@ def backtest_signals(df, initial_cash=1000):
     if not trades_df.empty:
         trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
         trades_df_clean = trades_df.dropna(subset=['Return %'])
-        total_return = (cash - initial_cash) / initial_cash * 100 if cash else 0
+        if np.isscalar(cash):
+            total_return = (cash - initial_cash) / initial_cash * 100
+        else:
+            total_return = 0
         win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
         num_trades = len(trades_df_clean)
     else:
@@ -184,12 +183,10 @@ def explain_signal(latest, prev):
     ema_diff_prev = ema9_prev - ema21_prev
     ema_diff_latest = ema9_latest - ema21_latest
 
-    # Strength of EMA difference
     ema_strength = abs(ema_diff_latest)
 
-    # Normalize RSI distances for confidence scaling
-    rsi_buy_conf = max(0, min(1, (rsi_latest - 30) / 40))   # RSI 30-70 scaled 0-1
-    rsi_sell_conf = max(0, min(1, (70 - rsi_latest) / 40))  # RSI 70-30 scaled 0-1
+    rsi_buy_conf = max(0, min(1, (rsi_latest - 30) / 40))
+    rsi_sell_conf = max(0, min(1, (70 - rsi_latest) / 40))
 
     if (ema_diff_prev < 0) and (ema_diff_latest > 0) and (rsi_latest > 30):
         signal = "Buy ✅"
@@ -211,7 +208,6 @@ if "signal_log" not in st.session_state:
 if run_button:
     with st.spinner("Running predictions and analysis..."):
         try:
-            # Download data
             for tf in [timeframe, "3mo", "6mo", "1y"]:
                 df = yf.download(symbol, period=tf, interval="1d", progress=False)
                 if df.shape[0] >= 50:
@@ -226,7 +222,6 @@ if run_button:
                 st.error("No data found.")
                 st.stop()
 
-            # Indicators
             df['EMA9'] = calculate_ema(df['Close'], 9)
             df['EMA21'] = calculate_ema(df['Close'], 21)
             df['RSI'] = calculate_rsi(df['Close'])
@@ -235,12 +230,10 @@ if run_button:
 
             df.dropna(inplace=True)
 
-            # Generate trading signals
             df = generate_signals(df)
 
             latest, prev = df.iloc[-1], df.iloc[-2]
 
-            # Signal & explainability
             signal, explanation, confidence = explain_signal(latest, prev)
             st.subheader(f"Signal: {signal} (Confidence: {confidence * 100:.0f}%)")
             st.markdown(f"**Explanation:** {explanation}")
@@ -264,7 +257,6 @@ if run_button:
             st.subheader("News Sentiment (Mocked)")
             st.markdown(fetch_news_sentiment(symbol))
 
-            # Backtesting
             st.subheader("📊 Backtesting Performance")
             trades_df, total_return, win_rate, num_trades = backtest_signals(df, initial_cash=1000)
             st.markdown(f"**Number of trades:** {num_trades}")
@@ -273,7 +265,6 @@ if run_button:
             if not trades_df.empty:
                 st.dataframe(trades_df)
 
-            # Plot backtest trades on candlestick chart with annotations
             fig_backtest = go.Figure()
 
             fig_backtest.add_trace(go.Candlestick(
@@ -282,7 +273,6 @@ if run_button:
                 name='Historical'
             ))
 
-            # Plot buy/sell markers
             buy_signals = trades_df.dropna(subset=['Exit Date']).copy()
             buy_signals = buy_signals[['Entry Date', 'Entry Price', 'Return %']]
 
@@ -305,7 +295,6 @@ if run_button:
                 name='Sell'
             ))
 
-            # Add return % annotations on sell signals
             annotations = []
             for _, row in trades_df.dropna(subset=['Exit Date']).iterrows():
                 ret = row['Return %']
@@ -335,7 +324,6 @@ if run_button:
             )
             st.plotly_chart(fig_backtest)
 
-            # Prophet forecast
             st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
             df_reset = df.reset_index()
             prices = df_reset['Close'].clip(lower=1.0).values.flatten()
@@ -367,7 +355,6 @@ if run_button:
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
 
-            # LSTM Forecast with Dropout & Candlestick chart + signal markers
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
                 seq_len = min(60, df.shape[0]-1)
@@ -412,9 +399,8 @@ if run_button:
                 st.download_button("Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
 
             except Exception as e:
-                st.error("Error in LSTM prediction: " + str(e))
-                st.text(traceback.format_exc())
+                st.error(f"LSTM forecast failed: {str(e)}")
 
         except Exception as e:
-            st.error(f"Error fetching or processing data: {e}")
+            st.error(f"Error fetching or processing data: {str(e)}")
             st.text(traceback.format_exc())
