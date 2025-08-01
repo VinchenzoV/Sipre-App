@@ -383,7 +383,7 @@ if run_button:
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
 
-            # LSTM Forecast with Dropout & Candlestick chart + signal markers
+                       # LSTM Forecast with Dropout & Candlestick chart + signal markers
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
                 seq_len = min(60, df.shape[0]-1)
@@ -391,4 +391,56 @@ if run_button:
 
                 model = Sequential([
                     LSTM(50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])),
-                    Dropout(0.
+                    Dropout(0.2),
+                    LSTM(50),
+                    Dropout(0.2),
+                    Dense(1)
+                ])
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                model.fit(X, y, epochs=15, batch_size=32, verbose=0)
+
+                future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
+                future_preds_scaled = []
+
+                for _ in range(int(lstm_period)):
+                    pred_scaled = model.predict(future_input, verbose=0)[0][0]
+                    future_preds_scaled.append(pred_scaled)
+                    pred_array = np.array([[[pred_scaled]]])
+                    future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
+
+                future_prices = scaler.inverse_transform(np.array(future_preds_scaled).reshape(-1, 1)).flatten()
+
+                # Clip predictions so they don't unrealistically drop below 90% of last close
+                last_close = float(df['Close'].iloc[-1])
+                clipped_prices = np.clip(future_prices, last_close * 0.9, None)
+
+                future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period), freq='D')
+                df_future = pd.DataFrame({'Date': future_dates, 'LSTM Forecast': clipped_prices})
+
+                fig_lstm = go.Figure()
+
+                # Add historical candlestick
+                fig_lstm.add_trace(go.Candlestick(
+                    x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Historical'
+                ))
+
+                # Add continuous LSTM forecast line
+                fig_lstm.add_trace(go.Scatter(
+                    x=df_future['Date'],
+                    y=df_future['LSTM Forecast'],
+                    mode='lines+markers',
+                    name='LSTM Forecast',
+                    line=dict(color='orange'),
+                    marker=dict(size=6)
+                ))
+
+                fig_lstm.update_layout(title=f"{symbol} LSTM Forecast",
+                                       yaxis_title='Price (USD)', xaxis_title='Date')
+                st.plotly_chart(fig_lstm)
+                st.dataframe(df_future, use_container_width=True)
+                st.download_button("Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
+
+            except Exception as e:
+                st.error("Error in LSTM prediction: " + str(e))
+                st.text(traceback.format_exc())
+
