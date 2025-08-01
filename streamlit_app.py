@@ -99,12 +99,9 @@ def generate_signals(df):
     df = df.copy()
     df['Signal'] = 0
 
-    # Signal = 1 when EMA9 > EMA21 and RSI > 30
     df.loc[(df['EMA9'] > df['EMA21']) & (df['RSI'] > 30), 'Signal'] = 1
-    # Signal = -1 when EMA9 < EMA21 and RSI < 70
     df.loc[(df['EMA9'] < df['EMA21']) & (df['RSI'] < 70), 'Signal'] = -1
 
-    # Forward fill Position based on Signal changes
     df['Position'] = df['Signal'].replace(to_replace=0, method='ffill').fillna(0).astype(int)
 
     return df
@@ -124,7 +121,6 @@ def backtest_signals(df, initial_cash=1000):
     shares = 0
     cash = initial_cash
     portfolio_values = []
-
     trades = []
 
     for idx, pos in zip(df.index, df['Position']):
@@ -145,11 +141,9 @@ def backtest_signals(df, initial_cash=1000):
             trades[-1]['Return %'] = (close_price - trades[-1]['Entry Price']) / trades[-1]['Entry Price'] * 100
             shares = 0
 
-        # Portfolio value = cash + shares * current price
         portfolio_value = cash + shares * close_price
         portfolio_values.append({'Date': idx, 'Portfolio Value': portfolio_value})
 
-    # Close open position at last date if any
     if position == 1 and shares > 0:
         close_price = float(df['Close'].iloc[-1])
         cash += shares * close_price
@@ -162,10 +156,10 @@ def backtest_signals(df, initial_cash=1000):
     trades_df = pd.DataFrame(trades)
     portfolio_df = pd.DataFrame(portfolio_values).set_index('Date')
 
-    if not trades_df.empty:
+    if trades_df is not None and not trades_df.empty:
         trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
         trades_df_clean = trades_df.dropna(subset=['Return %'])
-        total_return = (portfolio_df['Portfolio Value'][-1] - initial_cash) / initial_cash * 100
+        total_return = (portfolio_df['Portfolio Value'].iloc[-1] - initial_cash) / initial_cash * 100
         win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
         num_trades = len(trades_df_clean)
     else:
@@ -189,10 +183,8 @@ def explain_signal(latest, prev):
     ema_diff_prev = ema9_prev - ema21_prev
     ema_diff_latest = ema9_latest - ema21_latest
 
-    # Strength of EMA difference
     ema_strength = abs(ema_diff_latest)
 
-    # Normalize RSI distances for confidence scaling
     rsi_buy_conf = max(0, min(1, (rsi_latest - 30) / 40))   # RSI 30-70 scaled 0-1
     rsi_sell_conf = max(0, min(1, (70 - rsi_latest) / 40))  # RSI 70-30 scaled 0-1
 
@@ -216,7 +208,7 @@ if "signal_log" not in st.session_state:
 if run_button:
     with st.spinner("Running predictions and analysis..."):
         try:
-            # Download data
+            # Download data with fallback on multiple timeframes
             for tf in [timeframe, "3mo", "6mo", "1y"]:
                 df = yf.download(symbol, period=tf, interval="1d", progress=False)
                 if df.shape[0] >= 50:
@@ -231,7 +223,7 @@ if run_button:
                 st.error("No data found.")
                 st.stop()
 
-            # Indicators
+            # Calculate indicators
             df['EMA9'] = calculate_ema(df['Close'], 9)
             df['EMA21'] = calculate_ema(df['Close'], 21)
             df['RSI'] = calculate_rsi(df['Close'])
@@ -240,12 +232,12 @@ if run_button:
 
             df.dropna(inplace=True)
 
-            # Generate trading signals
+            # Generate signals
             df = generate_signals(df)
 
             latest, prev = df.iloc[-1], df.iloc[-2]
 
-            # Signal & explainability
+            # Signal explanation
             signal, explanation, confidence = explain_signal(latest, prev)
             st.subheader(f"Signal: {signal} (Confidence: {confidence * 100:.0f}%)")
             st.markdown(f"**Explanation:** {explanation}")
@@ -266,6 +258,7 @@ if run_button:
             if st.checkbox("Show Signal History"):
                 st.dataframe(pd.DataFrame(st.session_state.signal_log))
 
+            # News Sentiment
             st.subheader("News Sentiment (Mocked)")
             st.markdown(fetch_news_sentiment(symbol))
 
@@ -275,26 +268,17 @@ if run_button:
             st.markdown(f"**Number of trades:** {num_trades}")
             st.markdown(f"**Total return:** {total_return:.2f}%")
             st.markdown(f"**Win rate:** {win_rate:.2f}%")
-            if not trades_df.empty:
+            if trades_df is not None and not trades_df.empty:
                 st.dataframe(trades_df)
 
-            # === Improved Backtest Chart ===
+            # Backtest chart with trades
             fig_backtest = go.Figure()
-
-            # Candlesticks with explicit colors and no range slider
             fig_backtest.add_trace(go.Candlestick(
                 x=df.index,
-                open=df['Open'],
-                high=df['High'],
-                low=df['Low'],
-                close=df['Close'],
-                name='Price',
-                increasing_line_color='green',
-                decreasing_line_color='red',
-                showlegend=True
+                open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+                name='Historical'
             ))
 
-            # Buy markers
             fig_backtest.add_trace(go.Scatter(
                 x=trades_df['Entry Date'],
                 y=trades_df['Entry Price'],
@@ -302,8 +286,6 @@ if run_button:
                 marker=dict(symbol='triangle-up', color='green', size=12),
                 name='Buy'
             ))
-
-            # Sell markers
             fig_backtest.add_trace(go.Scatter(
                 x=trades_df['Exit Date'],
                 y=trades_df['Exit Price'],
@@ -312,7 +294,6 @@ if run_button:
                 name='Sell'
             ))
 
-            # Annotations for returns
             annotations = []
             for _, row in trades_df.dropna(subset=['Exit Date']).iterrows():
                 ret = row['Return %']
@@ -328,7 +309,7 @@ if run_button:
                     showarrow=True,
                     arrowhead=2,
                     ax=0,
-                    ay=-25,
+                    ay=-20,
                     font=dict(color=color, size=12),
                     arrowcolor=color
                 ))
@@ -339,13 +320,12 @@ if run_button:
                 yaxis_title='Price (USD)',
                 xaxis_title='Date',
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-                xaxis=dict(rangeslider=dict(visible=False)),
-                template="plotly_white",
-                margin=dict(t=50, b=40)
+                margin=dict(l=40, r=40, t=60, b=40),
+                height=600
             )
             st.plotly_chart(fig_backtest, use_container_width=True)
 
-            # === Prophet Forecast ===
+            # Prophet Forecast
             st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
             df_reset = df.reset_index()
             prices = df_reset['Close'].clip(lower=1.0).values.flatten()
@@ -365,23 +345,20 @@ if run_button:
                 forecast['yhat_upper_exp'] = np.expm1(forecast['yhat_upper'])
 
                 fig1 = go.Figure()
-                fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast',
-                                          line=dict(color='blue')))
+                fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
                 fig1.add_trace(go.Scatter(
                     x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
                     y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
                     fill='toself', fillcolor='rgba(0,100,80,0.2)',
                     line=dict(color='rgba(255,255,255,0)'),
                     hoverinfo="skip", showlegend=True, name='Confidence Interval'))
-                fig1.update_layout(title=f"{symbol} Prophet Forecast",
-                                   yaxis_title='Price (USD)', xaxis_title='Date',
-                                   template="plotly_white",
-                                   margin=dict(t=50, b=40))
+                fig1.update_layout(title=f"{symbol} Prophet Forecast", yaxis_title='Price (USD)', xaxis_title='Date',
+                                   margin=dict(l=40, r=40, t=60, b=40), height=500)
                 st.plotly_chart(fig1, use_container_width=True)
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
 
-            # === LSTM Forecast with improved chart ===
+            # LSTM Forecast and chart
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
                 seq_len = min(60, df.shape[0]-1)
@@ -400,31 +377,109 @@ if run_button:
                 future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
                 future_preds = []
                 for _ in range(int(lstm_period)):
-                    pred = model.predict(future_input)[0][0]
-                    future_preds.append(pred)
-                    new_input = np.append(future_input[:, 1:, :], [[[pred]]], axis=1)
-                    future_input = new_input
+                    pred_scaled = model.predict(future_input, verbose=0)[0][0]
+                    future_preds.append(pred_scaled)
+                    pred_array = np.array([[[pred_scaled]]])
+                    future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-                future_preds = np.array(future_preds).reshape(-1, 1)
-                future_preds_inv = scaler.inverse_transform(future_preds)
+                future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
+                last_close = float(df['Close'].iloc[-1])
+                clipped_prices = np.clip(future_prices, 0, None)
 
-                last_date = df.index[-1]
-                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=int(lstm_period))
+                future_dates = pd.date_range(df.index[-1], periods=int(lstm_period) + 1, freq='B')[1:]
 
-                fig_lstm = go.Figure()
-                fig_lstm.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Historical Close'))
-                fig_lstm.add_trace(go.Scatter(x=future_dates, y=future_preds_inv.flatten(), mode='lines+markers', name='LSTM Forecast',
-                                             line=dict(color='purple', dash='dash')))
-                fig_lstm.update_layout(title=f"{symbol} LSTM Price Forecast",
-                                       yaxis_title='Price (USD)',
-                                       xaxis_title='Date',
-                                       template="plotly_white",
-                                       margin=dict(t=50, b=40))
-                st.plotly_chart(fig_lstm, use_container_width=True)
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Historical'))
+                fig2.add_trace(go.Scatter(x=future_dates, y=clipped_prices, mode='lines+markers', name='LSTM Forecast'))
+                fig2.update_layout(title=f"{symbol} LSTM Forecast", yaxis_title='Price (USD)', xaxis_title='Date',
+                                   margin=dict(l=40, r=40, t=60, b=40), height=500)
+                st.plotly_chart(fig2, use_container_width=True)
+
+                forecast_df = pd.DataFrame({"Date": future_dates, "Predicted Close": clipped_prices})
+                st.dataframe(forecast_df)
+                st.download_button("Download LSTM Forecast", forecast_df.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
+
             except Exception as e:
-                st.error(f"LSTM forecast error: {str(e)}")
-                st.text(traceback.format_exc())
+                st.error(f"LSTM forecasting error: {str(e)}")
+
+            # Main price chart with indicators
+            st.subheader(f"{symbol} Price Chart with Indicators")
+
+            fig_main = go.Figure()
+
+            # Candlestick
+            fig_main.add_trace(go.Candlestick(
+                x=df.index,
+                open=df['Open'],
+                high=df['High'],
+                low=df['Low'],
+                close=df['Close'],
+                name='Price'
+            ))
+
+            # EMA lines
+            fig_main.add_trace(go.Scatter(
+                x=df.index, y=df['EMA9'], mode='lines', line=dict(color='blue', width=1.5), name='EMA9'
+            ))
+            fig_main.add_trace(go.Scatter(
+                x=df.index, y=df['EMA21'], mode='lines', line=dict(color='orange', width=1.5), name='EMA21'
+            ))
+
+            # Bollinger Bands
+            fig_main.add_trace(go.Scatter(
+                x=df.index, y=df['BB_upper'], mode='lines', line=dict(color='gray', width=1, dash='dot'), name='BB Upper'
+            ))
+            fig_main.add_trace(go.Scatter(
+                x=df.index, y=df['BB_lower'], mode='lines', line=dict(color='gray', width=1, dash='dot'), name='BB Lower'
+            ))
+
+            # Buy/sell signals on main chart
+            buy_signals = df[df['Signal'] == 1]
+            sell_signals = df[df['Signal'] == -1]
+
+            fig_main.add_trace(go.Scatter(
+                x=buy_signals.index, y=buy_signals['Close'], mode='markers',
+                marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy Signal'
+            ))
+            fig_main.add_trace(go.Scatter(
+                x=sell_signals.index, y=sell_signals['Close'], mode='markers',
+                marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell Signal'
+            ))
+
+            fig_main.update_layout(
+                yaxis_title='Price (USD)',
+                xaxis_title='Date',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                margin=dict(l=40, r=40, t=60, b=40),
+                height=600,
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig_main, use_container_width=True)
+
+            # RSI and MACD charts below main chart for better overview
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("RSI")
+                fig_rsi = go.Figure()
+                fig_rsi.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI', line=dict(color='purple')))
+                fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
+                fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+                fig_rsi.update_layout(yaxis_range=[0, 100], yaxis_title="RSI", margin=dict(l=40, r=40, t=40, b=40), height=300)
+                st.plotly_chart(fig_rsi, use_container_width=True)
+
+            with col2:
+                st.subheader("MACD")
+                fig_macd = go.Figure()
+                fig_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], mode='lines', name='MACD', line=dict(color='blue')))
+                fig_macd.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], mode='lines', name='Signal Line', line=dict(color='orange')))
+                fig_macd.add_bar(x=df.index, y=df['MACD_hist'], name='Histogram', marker_color='grey')
+                fig_macd.update_layout(yaxis_title="MACD", margin=dict(l=40, r=40, t=40, b=40), height=300)
+                st.plotly_chart(fig_macd, use_container_width=True)
 
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            st.error("An unexpected error occurred. See details below.")
             st.text(traceback.format_exc())
+else:
+    st.info("Enter a symbol on the sidebar and click 'Run Prediction'.")
+
