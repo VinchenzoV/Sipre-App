@@ -81,7 +81,7 @@ def prepare_lstm_data(df, sequence_length=60):
         X.append(scaled_data[i-sequence_length:i])
         y.append(scaled_data[i])
     X = np.array(X)
-    y = np.array(y)
+    y = np.array(y).squeeze()
     return X, y, scaler
 
 def fetch_news_sentiment(symbol):
@@ -343,8 +343,7 @@ if run_button:
             st.subheader(f"Prophet Forecast (Next {int(prophet_period)} Days)")
             df_prophet = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
             df_prophet['ds'] = pd.to_datetime(df_prophet['ds'])
-            # Explicit convert y to pandas Series, then numeric, drop NA
-            df_prophet['y'] = pd.Series(df_prophet['y'])
+            # Make sure y is a 1D numeric Series with no NaNs
             df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
             df_prophet = df_prophet.dropna(subset=['y'])
 
@@ -356,21 +355,17 @@ if run_button:
                 future = model_prophet.make_future_dataframe(periods=int(prophet_period))
                 forecast = model_prophet.predict(future)
 
-                forecast['yhat_exp'] = np.expm1(forecast['yhat'])
-                forecast['yhat_lower_exp'] = np.expm1(forecast['yhat_lower'].clip(lower=np.log1p(1e-3)))
-                forecast['yhat_upper_exp'] = np.expm1(forecast['yhat_upper'])
-
                 fig1 = go.Figure()
-                fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_exp'], mode='lines', name='Forecast'))
+                fig1.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Forecast'))
                 fig1.add_trace(go.Scatter(
                     x=pd.concat([forecast['ds'], forecast['ds'][::-1]]),
-                    y=pd.concat([forecast['yhat_upper_exp'], forecast['yhat_lower_exp'][::-1]]),
+                    y=pd.concat([forecast['yhat_upper'], forecast['yhat_lower'][::-1]]),
                     fill='toself', fillcolor='rgba(0,100,80,0.2)',
                     line=dict(color='rgba(255,255,255,0)'),
                     hoverinfo="skip", showlegend=True, name='Confidence Interval'))
                 fig1.update_layout(title=f"{symbol} Prophet Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
                 st.plotly_chart(fig1, use_container_width=True)
-                st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
+                st.dataframe(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast CSV", forecast.to_csv(index=False), file_name=f"{symbol}_prophet_forecast.csv")
 
             # LSTM Forecast
@@ -399,49 +394,53 @@ if run_button:
 
                 lstm_forecast = scaler.inverse_transform(np.array(lstm_forecast_scaled).reshape(-1,1)).flatten()
 
-                future_dates = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=int(lstm_period))
-                df_lstm_forecast = pd.DataFrame({'Date': future_dates, 'LSTM Forecast': lstm_forecast})
+                # Prepare plot data
+                last_date = df.index[-1]
+                future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=int(lstm_period))
 
                 fig2 = go.Figure()
-                fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Historical Close'))
-                fig2.add_trace(go.Scatter(x=df_lstm_forecast['Date'], y=df_lstm_forecast['LSTM Forecast'], mode='lines', name='LSTM Forecast'))
+                fig2.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Historical'))
+                fig2.add_trace(go.Scatter(x=future_dates, y=lstm_forecast, mode='lines+markers', name='LSTM Forecast'))
                 fig2.update_layout(title=f"{symbol} LSTM Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
                 st.plotly_chart(fig2, use_container_width=True)
-                st.dataframe(df_lstm_forecast, use_container_width=True)
-                st.download_button("Download LSTM Forecast CSV", df_lstm_forecast.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
 
+                forecast_df = pd.DataFrame({'Date': future_dates, 'LSTM_Forecast': lstm_forecast})
+                st.download_button("Download LSTM Forecast CSV", forecast_df.to_csv(index=False), file_name=f"{symbol}_lstm_forecast.csv")
             except Exception as e:
-                st.error(f"LSTM forecasting failed: {e}")
-                st.text(traceback.format_exc())
+                st.error(f"Error generating LSTM forecast: {e}")
 
-            # Plot Indicators and Candlestick Chart
-            st.subheader("Technical Indicators and Candlestick Chart")
-            fig_indicators = go.Figure(data=[go.Candlestick(
+            # Indicator plots - combined
+            st.subheader("Indicators & Price Chart")
+            fig_indicators = go.Figure()
+            fig_indicators.add_trace(go.Candlestick(
                 x=df.index,
-                open=df['Open'],
-                high=df['High'],
-                low=df['Low'],
-                close=df['Close'],
-                name='Price')])
-
+                open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+                name='Candlestick'
+            ))
             fig_indicators.add_trace(go.Scatter(x=df.index, y=df['EMA9'], mode='lines', name='EMA9'))
             fig_indicators.add_trace(go.Scatter(x=df.index, y=df['EMA21'], mode='lines', name='EMA21'))
-            fig_indicators.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], mode='lines', line=dict(dash='dot'), name='BB Upper'))
-            fig_indicators.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], mode='lines', line=dict(dash='dot'), name='BB Lower'))
-
+            fig_indicators.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], mode='lines', name='BB Upper', line=dict(dash='dot')))
+            fig_indicators.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], mode='lines', name='BB Lower', line=dict(dash='dot')))
+            fig_indicators.update_layout(title=f"{symbol} Price and Indicators", yaxis_title='Price (USD)', xaxis_title='Date')
             st.plotly_chart(fig_indicators, use_container_width=True)
 
-            st.subheader("RSI and MACD")
+            st.subheader("RSI & MACD")
             fig_rsi_macd = go.Figure()
             fig_rsi_macd.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI'))
-            fig_rsi_macd.add_hline(y=30, line_dash="dot", line_color='red')
-            fig_rsi_macd.add_hline(y=70, line_dash="dot", line_color='green')
+            fig_rsi_macd.add_hline(y=70, line_dash='dash', line_color='red')
+            fig_rsi_macd.add_hline(y=30, line_dash='dash', line_color='green')
+            fig_rsi_macd.update_layout(yaxis=dict(range=[0, 100]), title=f"{symbol} RSI", xaxis_title='Date')
 
-            fig_rsi_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], mode='lines', name='MACD'))
-            fig_rsi_macd.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], mode='lines', name='MACD Signal'))
+            # MACD below RSI in same chart with secondary y axis
+            fig_rsi_macd.add_trace(go.Scatter(x=df.index, y=df['MACD'], mode='lines', name='MACD', yaxis='y2'))
+            fig_rsi_macd.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], mode='lines', name='MACD Signal', yaxis='y2'))
 
+            fig_rsi_macd.update_layout(
+                yaxis2=dict(overlaying='y', side='right', title='MACD'),
+                title=f"{symbol} RSI and MACD"
+            )
             st.plotly_chart(fig_rsi_macd, use_container_width=True)
 
-        except Exception as e:
-            st.error(f"An unexpected error occurred.\n{e}")
-            st.text(traceback.format_exc())
+        except Exception:
+            st.error("An error occurred. See details below:")
+            st.error(traceback.format_exc())
