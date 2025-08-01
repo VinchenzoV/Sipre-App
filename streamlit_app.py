@@ -109,7 +109,7 @@ def generate_signals(df):
 
     return df
 
-def backtest_signals(df, initial_capital=1000):
+def backtest_signals(df, initial_cash=1000):
     df = df.copy()
     df['Position'] = 0
 
@@ -120,63 +120,47 @@ def backtest_signals(df, initial_capital=1000):
     df.loc[sell_cond, 'Position'] = -1
     df['Position'] = df['Position'].astype(int)
 
-    trades = []
+    cash = initial_cash
     position = 0
-    entry_price = 0.0
-    entry_date = None
-    cash = initial_capital
     shares = 0
-
-    portfolio_values = []
+    trades = []
+    entry_date = None
+    entry_price = 0.0
 
     for idx, pos in zip(df.index, df['Position']):
-        close_price = float(df.loc[idx, 'Close'])
+        price = df.loc[idx, 'Close']
         if position == 0 and pos == 1:
-            # Enter long position - buy max shares with available cash
-            shares = cash // close_price
-            if shares > 0:
-                entry_price = close_price
-                entry_date = pd.Timestamp(idx)
-                cash -= shares * entry_price
-                position = 1
-                trades.append({'Entry Date': entry_date, 'Entry Price': entry_price,
-                               'Exit Date': None, 'Exit Price': None, 'Return %': None,
-                               'Shares': shares})
+            shares = cash / price
+            cash = 0
+            position = 1
+            entry_price = price
+            entry_date = idx
+            trades.append({'Entry Date': entry_date, 'Entry Price': entry_price, 'Exit Date': None, 'Exit Price': None, 'Return %': None})
         elif position == 1 and pos == -1:
-            # Exit position - sell all shares
-            exit_price = close_price
-            exit_date = pd.Timestamp(idx)
-            cash += shares * exit_price
+            cash = shares * price
             position = 0
+            exit_price = price
+            exit_date = idx
             trades[-1]['Exit Date'] = exit_date
             trades[-1]['Exit Price'] = exit_price
             trades[-1]['Return %'] = (exit_price - trades[-1]['Entry Price']) / trades[-1]['Entry Price'] * 100
-            trades[-1]['Shares'] = shares
             shares = 0
-        # Track portfolio value daily
-        portfolio_value = cash + shares * close_price
-        portfolio_values.append({'Date': idx, 'Portfolio Value': portfolio_value})
 
     # Close open position at last date if any
     if position == 1:
-        exit_price = float(df['Close'].iloc[-1])
+        exit_price = df['Close'].iloc[-1]
         exit_date = df.index[-1]
-        cash += shares * exit_price
-        position = 0
+        cash = shares * exit_price
         trades[-1]['Exit Date'] = exit_date
         trades[-1]['Exit Price'] = exit_price
         trades[-1]['Return %'] = (exit_price - trades[-1]['Entry Price']) / trades[-1]['Entry Price'] * 100
-        trades[-1]['Shares'] = shares
-        shares = 0
-        portfolio_values[-1]['Portfolio Value'] = cash  # last day portfolio value equals cash after sell
 
     trades_df = pd.DataFrame(trades)
-    portfolio_df = pd.DataFrame(portfolio_values).set_index('Date')
 
     if not trades_df.empty:
         trades_df['Return %'] = pd.to_numeric(trades_df['Return %'], errors='coerce')
         trades_df_clean = trades_df.dropna(subset=['Return %'])
-        total_return = (portfolio_df['Portfolio Value'][-1] - initial_capital) / initial_capital * 100
+        total_return = (cash - initial_cash) / initial_cash * 100 if cash else 0
         win_rate = (trades_df_clean['Return %'] > 0).mean() * 100 if not trades_df_clean.empty else 0
         num_trades = len(trades_df_clean)
     else:
@@ -184,7 +168,7 @@ def backtest_signals(df, initial_capital=1000):
         win_rate = 0
         num_trades = 0
 
-    return trades_df, total_return, win_rate, num_trades, portfolio_df
+    return trades_df, total_return, win_rate, num_trades
 
 def explain_signal(latest, prev):
     ema9_latest = float(latest["EMA9"])
@@ -282,7 +266,7 @@ if run_button:
 
             # Backtesting
             st.subheader("📊 Backtesting Performance")
-            trades_df, total_return, win_rate, num_trades, portfolio_df = backtest_signals(df, initial_capital=1000)
+            trades_df, total_return, win_rate, num_trades = backtest_signals(df, initial_cash=1000)
             st.markdown(f"**Number of trades:** {num_trades}")
             st.markdown(f"**Total return:** {total_return:.2f}%")
             st.markdown(f"**Win rate:** {win_rate:.2f}%")
@@ -383,7 +367,7 @@ if run_button:
                 st.dataframe(forecast[['ds', 'yhat_exp', 'yhat_lower_exp', 'yhat_upper_exp']].tail(10), use_container_width=True)
                 st.download_button("Download Prophet Forecast", forecast.to_csv(index=False), file_name=f"{symbol}_prophet.csv")
 
-                       # LSTM Forecast with Dropout & Candlestick chart + signal markers
+            # LSTM Forecast with Dropout & Candlestick chart + signal markers
             st.subheader(f"LSTM Forecast (Next {int(lstm_period)} Days)")
             try:
                 seq_len = min(60, df.shape[0]-1)
@@ -400,17 +384,14 @@ if run_button:
                 model.fit(X, y, epochs=15, batch_size=32, verbose=0)
 
                 future_input = X[-1].reshape(1, X.shape[1], X.shape[2])
-                future_preds_scaled = []
-
+                future_preds = []
                 for _ in range(int(lstm_period)):
                     pred_scaled = model.predict(future_input, verbose=0)[0][0]
-                    future_preds_scaled.append(pred_scaled)
+                    future_preds.append(pred_scaled)
                     pred_array = np.array([[[pred_scaled]]])
                     future_input = np.concatenate((future_input[:, 1:, :], pred_array), axis=1)
 
-                future_prices = scaler.inverse_transform(np.array(future_preds_scaled).reshape(-1, 1)).flatten()
-
-                # Clip predictions so they don't unrealistically drop below 90% of last close
+                future_prices = scaler.inverse_transform(np.array(future_preds).reshape(-1, 1)).flatten()
                 last_close = float(df['Close'].iloc[-1])
                 clipped_prices = np.clip(future_prices, last_close * 0.9, None)
 
@@ -418,24 +399,14 @@ if run_button:
                 df_future = pd.DataFrame({'Date': future_dates, 'LSTM Forecast': clipped_prices})
 
                 fig_lstm = go.Figure()
-
-                # Add historical candlestick
                 fig_lstm.add_trace(go.Candlestick(
                     x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Historical'
                 ))
-
-                # Add continuous LSTM forecast line
                 fig_lstm.add_trace(go.Scatter(
-                    x=df_future['Date'],
-                    y=df_future['LSTM Forecast'],
-                    mode='lines+markers',
-                    name='LSTM Forecast',
-                    line=dict(color='orange'),
-                    marker=dict(size=6)
+                    x=df_future['Date'], y=df_future['LSTM Forecast'],
+                    mode='lines+markers', name='LSTM Forecast', line=dict(color='orange')
                 ))
-
-                fig_lstm.update_layout(title=f"{symbol} LSTM Forecast",
-                                       yaxis_title='Price (USD)', xaxis_title='Date')
+                fig_lstm.update_layout(title=f"{symbol} LSTM Forecast", yaxis_title='Price (USD)', xaxis_title='Date')
                 st.plotly_chart(fig_lstm)
                 st.dataframe(df_future, use_container_width=True)
                 st.download_button("Download LSTM Forecast", df_future.to_csv(index=False), file_name=f"{symbol}_lstm.csv")
@@ -444,3 +415,6 @@ if run_button:
                 st.error("Error in LSTM prediction: " + str(e))
                 st.text(traceback.format_exc())
 
+        except Exception as e:
+            st.error(f"Error fetching or processing data: {e}")
+            st.text(traceback.format_exc())
